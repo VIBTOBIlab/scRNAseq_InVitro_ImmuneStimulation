@@ -1,0 +1,696 @@
+---
+title: "004_MultiNicheNet_AdaptedApproach_CorrelationBasedFiltering"
+author: "Tine D'hamers"
+date: "2026-04-07"
+output: html_document
+params: 
+  prefix_output: "PatStim_NoBase"
+  path_input: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/004_MultiNicheNetR/Objects"
+  date: "20260407"
+  path_output_circos: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/004_MultiNicheNetR/CircosDiagrams"
+  path_output: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/004_MultiNicheNetR/"
+---
+
+# Rationale
+
+This file will be used to perform the downstream data analysis based on the MultiNicheNet objects generated in the `001_MultiNicheNetObjectInitialization.Rmd` script. The link to an overview of the distinct functions used in this package is availabe [here](https://rdrr.io/github/saeyslab/multinichenetr/api/). The starting part (preprocessing, ...) is similar to what was performed in the `002_MultiNicheNet_DownstreamAnalysis.Rmd` file. However, updates in the analysis were performed based on the inputs of Ruth Seurinck during a meeting at 03/04/2026. Meeting notes can be found in my Drylab Notebook on scCITE-seq. The object initialization using the adapted approach are performed in the `003_MultiNicheNetObjectInitialization_LowerDEScenario.Rmd` script
+
+The adaptation included:
+
+- Switching the prioritization scenario from 'regular' to 'lower DE', in which the ligand actvitiy gets a highter weight and all the expression based features a lower weight in prioritization interactions
+- Prioritization based on correlations between ligand activity and up/down-regulation of the target genes in the receiver cell type
+
+
+# Start-up
+
+## Load libraries
+
+```{r Libraries}
+.libPaths("/kyukon/data/gent/vo/002/gvo00224/TOBI/Projects/SingleCellPipeline/resultsCeline/seuratintegrate/Rpackages/R_4.4.1-foss_2023b/")
+library(dplyr)
+library(tidyverse)
+options(bitmapType='cairo')
+library(nichenetr)
+library(multinichenetr)
+library(SingleCellExperiment)
+
+# Plots
+library(ggplot2)
+library(ggrepel)
+library(ggpubr)
+library(ggridges)
+
+library(ComplexHeatmap)
+```
+
+## Plotting Themes
+
+```{r PlotThemes}
+# Data visualization themes
+source("/kyukon/data/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Scripts/PlotThemes_sc_CVID.R")
+# Store colors for the distinct directions
+colDirection<-c("UP" = "darkgreen",
+                "DOWN" = "darkred",
+                "MIXED" = "#D5BBB1",
+                "NS" = "grey80")
+grid.grey = "grey95"
+```
+
+## Preparatory steps
+
+```{r Network and matrix loading}
+# Specify the organism
+organism <- "human"
+
+# Time out option
+options(timeout = 120)
+
+# Extract the necessary data from Zenodo
+# Start with the ligand-receptor network
+lr_network_all <- readRDS(url( "https://zenodo.org/record/10229222/files/lr_network_human_allInfo_30112033.rds" )) %>%
+  # Converting aliases used in the reference to gene symbols, matching our data
+  mutate( ligand = convert_alias_to_symbols(ligand, organism = organism), 
+          receptor = convert_alias_to_symbols(receptor, organism = organism)) 
+
+lr_network_all <- lr_network_all %>% 
+  # Convert the nqmes in ligand names into valid names 
+  # Ths implies e.g. "-" are transformed in a "."
+  mutate(ligand = make.names(ligand), receptor = make.names(receptor)) 
+
+lr_network <- lr_network_all %>% 
+  # Only keep unique/distinct rows from a data frame to avoid the loss of genes in downstream visualizations
+  # Taking into account the combination of ligand and receptor
+  distinct(ligand, receptor) 
+
+# Ligand-target matrix (LARGE MATRIX!!)
+ligand_target_matrix <- readRDS(url( "https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final.rds" )) 
+
+# Convert colnames (ligands) into usable names
+colnames(ligand_target_matrix) <- colnames(ligand_target_matrix) %>% 
+  convert_alias_to_symbols(organism = organism) %>% 
+  make.names() 
+
+# Convert rownames (targets) into usable names
+rownames(ligand_target_matrix) <- rownames(ligand_target_matrix) %>% 
+  convert_alias_to_symbols(organism = organism) %>% 
+  make.names() 
+
+# Only use the ligands that are present in the ligand-target matrix for downstream analysis
+lr_network <- lr_network %>% 
+  filter(ligand %in% colnames(ligand_target_matrix)) 
+# Only use the ligands that are present in the ligand-receptor matrix for downstream analysis
+ligand_target_matrix <- ligand_target_matrix[, lr_network$ligand %>% unique()]
+
+# Clean a bit
+rm(ligand_target_matrix)
+```
+
+```{r Contrasts}
+# Contrast definition
+# contrast_oi <- paste0("'", sort(unique(IntData_NoDbl.sce$Stimulation))[-5], "-Unstimulated", "'", collapse =",")
+contrast_oi <- c("'CD3CD28_beads-Unstimulated','IFNgamma-Unstimulated','MegaCD40L-Unstimulated','ODN2006-Unstimulated'")
+
+contrast_tbl <-tibble(contrast =
+                        c("CD3CD28_beads-Unstimulated","IFNgamma-Unstimulated",
+                          "MegaCD40L-Unstimulated","ODN2006-Unstimulated"),
+                      group = c("CD3CD28_beads", "IFNgamma", "MegaCD40L",  "ODN2006"))
+
+contrast_oi
+contrast_tbl
+
+# Top N targets per ligand to be shown
+top_n_target <- 250
+```
+
+## Reading in the necessary data
+
+```{r ReadInRDSObject}
+multinichenet_output_8h<-readRDS(file = file.path(params$path_output,
+                                                  "Objects",
+                                                  paste0("MultiNicheNet_Output_8h_LowerDEScenario_", params$date, ".rds")))
+multinichenet_output_30h<-readRDS(file = file.path(params$path_output,
+                                                  "Objects",
+                                                  paste0("MultiNicheNet_Output_30h_LowerDEScenario_", params$date, ".rds")))
+```
+
+# MultiNicheNet downstream data analysis
+
+## 1. Visualization of differential cell-cell interactions
+
+### 1.1. Summarizing ChordDiagram circos plots
+
+Just to get a general overview on the trends throughout the distinct conditions, I generated the circos plots to get a general idea of top priorizited interactions in the overall network of interactions. I will look into the top 50 interactions for now.
+
+```{r ChordDiagrams}
+# Extraction of the top interactons overall
+## 8h
+prioritized_tbl_oi_all_top50.8h <- get_top_n_lr_pairs(
+  multinichenet_output_8h$prioritization_tables,
+  top_n=50,
+  # Top is given overall
+  rank_per_group=FALSE
+)
+table(prioritized_tbl_oi_all_top50.8h$group)
+
+## 30h
+prioritized_tbl_oi_all_top50.30h <- get_top_n_lr_pairs(
+  multinichenet_output_30h$prioritization_tables,
+  top_n=50,
+  # Top is given overall
+  rank_per_group=FALSE
+)
+table(prioritized_tbl_oi_all_top50.30h$group)
+
+# Extract the data
+prioritized_tbl_oi_all_top50.8h.data<-
+  multinichenet_output_8h$prioritization_tables$group_prioritization_tbl%>%
+  # Filter out the prioritized top 50 interactions
+  filter(id %in% prioritized_tbl_oi_all_top50.8h$id) %>%
+  distinct(id, sender, receiver, ligand, receptor, group)%>%
+  left_join(prioritized_tbl_oi_all_top50.8h)
+prioritized_tbl_oi_all_top50.30h.data<-
+  multinichenet_output_30h$prioritization_tables$group_prioritization_tbl%>%
+  # Filter out the prioritized top 50 interactions
+  filter(id %in% prioritized_tbl_oi_all_top50.30h$id) %>%
+  distinct(id, sender, receiver, ligand, receptor, group)%>%
+  left_join(prioritized_tbl_oi_all_top50.30h)
+
+# The interactions that are not present (as NA in the table) needs to be set to zero
+prioritized_tbl_oi_all_top50.8h.data$prioritization_score[is.na(prioritized_tbl_oi_all_top50.8h.data$prioritization_score)]<-0
+prioritized_tbl_oi_all_top50.30h.data$prioritization_score[is.na(prioritized_tbl_oi_all_top50.30h.data$prioritization_score)]<-0
+
+# Extract the sender and receiver cell types
+# These are the same for both incubation time points
+senders_receivers<-union(prioritized_tbl_oi_all_top50.8h.data$sender %>% unique(),
+                         prioritized_tbl_oi_all_top50.8h.data$receiver %>% unique())%>%
+  sort()
+
+# Use the same colors as used in previous analysis
+colorsCellType<-colorsCellType %>% 
+  magrittr::set_names(make.names(names(colorsCellType)))
+colors_sender<- colorsCellType %>%
+  magrittr::extract(names(colorsCellType) %in% senders_receivers)
+colors_receiver<- colorsCellType %>%
+  magrittr::extract(names(colorsCellType) %in% senders_receivers)
+
+# Generate the circos diagram
+Circos_top50.8h<- 
+  make_circos_group_comparison(prioritized_tbl_oi_all_top50.8h.data,
+                             colors_sender = colors_sender,
+                             colors_receiver = colors_receiver)
+Circos_top50.30h<-
+  make_circos_group_comparison(prioritized_tbl_oi_all_top50.30h.data,
+                             colors_sender = colors_sender,
+                             colors_receiver = colors_receiver)
+```
+
+```{r SaveCircosPlots_Top50AllInteractions}
+# Save plots
+# 8h
+for (condition in names(Circos_top50.8h)){
+  pdf(file = file.path(params$path_output_circos,
+                           paste0("Circos_", condition,
+                                  "_Top50Interqctions_AllInteractions_8h_", params$date2, ".pdf")),
+    width =7, height=8)
+  print(Circos_top50.8h[[condition]])
+  dev.off()
+}
+
+# 30h
+for (condition in names(Circos_top50.30h)){
+  pdf(file = file.path(params$path_output_circos,
+                           paste0("Circos_", condition,
+                                  "_Top50Interqctions_AllInteractions_30h_", params$date2, ".pdf")),
+    width =7, height=8)
+  print(Circos_top50.30h[[condition]])
+  dev.off()
+}
+```
+
+### 1.2. Bubble plot visualization of top 50 interactions per group (stimulatory condition)
+
+```{r BubblePlot_Top50_PerCondition}
+BubblePlot_top50_PerCond.8h<-lapply(
+  multinichenet_output_8h$prioritization_tables$group_prioritization_table_source$group%>%
+    unique,
+  FUN = function(group_oi){
+    tmp_prior_tbl <- get_top_n_lr_pairs(
+      multinichenet_output_8h$prioritization_tables,
+      top_n = 50,
+      groups_oi = group_oi)
+    plot_oi<-make_sample_lr_prod_activity_plots_Omnipath(
+      multinichenet_output_8h$prioritization_tables,
+      tmp_prior_tbl %>% 
+        inner_join(lr_network_all)
+    )
+    plot_oi + labs(title = group_oi)
+  })
+BubblePlot_top50_PerCond.30h<-lapply(
+  multinichenet_output_30h$prioritization_tables$group_prioritization_table_source$group%>%
+    unique,
+  FUN = function(group_oi){
+    tmp_prior_tbl <- get_top_n_lr_pairs(
+      multinichenet_output_30h$prioritization_tables,
+      top_n = 50,
+      groups_oi = group_oi)
+    plot_oi<-make_sample_lr_prod_activity_plots_Omnipath(
+      multinichenet_output_30h$prioritization_tables,
+      tmp_prior_tbl %>% 
+        inner_join(lr_network_all)
+    )
+    plot_oi + labs(title = group_oi)
+  })
+
+names(BubblePlot_top50_PerCond.8h)<-unique(multinichenet_output_8h$prioritization_tables$group_prioritization_table_source$group)
+names(BubblePlot_top50_PerCond.30h)<-unique(multinichenet_output_30h$prioritization_tables$group_prioritization_table_source$group)
+```
+
+```{r SaveBubblePlots_Top50_PerCondition}
+# Save plots
+# 8h
+for (condition in names(BubblePlot_top50_PerCond.8h)){
+  pdf(file = file.path(params$path_output,
+                           paste0("BubblePlot_", condition,
+                                  "_Top50Interactions_8h_", params$date, ".pdf")),
+    width = 17, height=15)
+  print(BubblePlot_top50_PerCond.8h[[condition]])
+  dev.off()
+}
+
+# 30h
+for (condition in names(BubblePlot_top50_PerCond.30h)){
+  pdf(file = file.path(params$path_output,
+                           paste0("BubblePlot_", condition,
+                                  "_Top50Interactions_30h_", params$date, ".pdf")),
+    width = 17, height=15)
+  print(BubblePlot_top50_PerCond.30h[[condition]])
+  dev.off()
+}
+```
+
+## 2. Selection of LR-interactions based on intercellular regulatory network
+
+### 2.1. Filtering of target genes based on LR-target expression correlation 
+
+The ligand-receptor interactions are filtered out based on correlation value. Downstream target genes linked to the LR-interactions of interaction that both show high expression correlation (pearson correlation > 0.33) and have some prior knowledge to support their link are retained to filter out more accurate LR-interactions.
+
+```{r CorFiltering_LRInteractions_8h}
+# Define threshold for correlation filtering
+CorThresh<-0.80
+
+lr_target_prior_cor_filtered.8h<-
+  # Extract all groups
+  multinichenet_output_8h$prioritization_tables$group_prioritization_tbl$group %>% 
+  unique() %>%
+  # Perform the analysis for each of the groups separately
+  lapply(function(group_oi){
+    lr_target_prior_cor_filtered.8h <- inner_join(
+      multinichenet_output_8h$lr_target_prior_cor,
+      # Extract the ligand activities of the interactions
+      multinichenet_output_8h$ligand_activities_targets_DEgenes$ligand_activities%>%
+        # Make sure the combinations made by the folowing features all have a unique line
+        # The ligand activity scores are not taken along in this line
+        distinct(ligand, target, direction_regulation, contrast)
+      ) %>%
+      # Adding group information next to the contrast information
+      inner_join(contrast_tbl)%>%
+      # Only select the group of interest
+      filter(group == group_oi)
+    
+    # Extract upregulated targets meeting the cutoff for the pearson correlation
+    lr_target_prior_cor_filtered_up.8h<-lr_target_prior_cor_filtered.8h%>%
+      filter(direction_regulation == "up") %>%
+      filter((rank_of_target < top_n_target) & (pearson > CorThresh))
+    
+    # Extract the downregulated targets meeting the cutoff for the pearson correlation
+    lr_target_prior_cor_filtered_down.8h<-lr_target_prior_cor_filtered.8h%>%
+      filter(direction_regulation == "down") %>%
+      filter((rank_of_target < top_n_target) & (pearson < -CorThresh))
+    
+    # Only retain the selection of up- and downregulated genes
+    lr_target_prior_cor_filtered.8h<-bind_rows(
+      lr_target_prior_cor_filtered_up.8h,
+      lr_target_prior_cor_filtered_down.8h
+    )
+    }) %>% 
+  # Place them in one data frame
+  bind_rows()
+
+lr_target_df.8h <- lr_target_prior_cor_filtered.8h %>%
+  distinct(group, sender, receiver, ligand, receptor, id, target, direction_regulation)
+
+lr_target_df.8h%>%head(n=20)
+```
+
+```{r CorFiltering_LRInteractions_30h}
+lr_target_prior_cor_filtered.30h<-
+  # Extract all groups
+  multinichenet_output_30h$prioritization_tables$group_prioritization_tbl$group %>% 
+  unique() %>%
+  # Perform the analysis for each of the groups separately
+  lapply(function(group_oi){
+    lr_target_prior_cor_filtered.30h <- inner_join(
+      multinichenet_output_30h$lr_target_prior_cor,
+      # Extract the ligand activities of the interactions
+      multinichenet_output_30h$ligand_activities_targets_DEgenes$ligand_activities%>%
+        # Make sure the combinations made by the folowing features all have a unique line
+        # The ligand activity scores are not taken along in this line
+        distinct(ligand, target, direction_regulation, contrast)
+      ) %>%
+      # Adding group information next to the contrast information
+      inner_join(contrast_tbl)%>%
+      # Only select the group of interest
+      filter(group == group_oi)
+    
+    # Extract upregulated targets meeting the cutoff for the pearson correlation
+    lr_target_prior_cor_filtered_up.30h<-lr_target_prior_cor_filtered.30h%>%
+      filter(direction_regulation == "up") %>%
+      filter((rank_of_target < top_n_target) & (pearson > CorThresh))
+    
+    # Extract the downregulated targets meeting the cutoff for the pearson correlation
+    lr_target_prior_cor_filtered_down.30h<-lr_target_prior_cor_filtered.30h%>%
+      filter(direction_regulation == "down") %>%
+      filter((rank_of_target < top_n_target) & (pearson < -CorThresh))
+    
+    # Only retain the selection of up- and downregulated genes
+    lr_target_prior_cor_filtered.30h<-bind_rows(
+      lr_target_prior_cor_filtered_up.30h,
+      lr_target_prior_cor_filtered_down.30h
+    )
+    }) %>% 
+  # Place them in one data frame
+  bind_rows()
+
+lr_target_df.30h <- lr_target_prior_cor_filtered.30h %>%
+  distinct(group, sender, receiver, ligand, receptor, id, target, direction_regulation)
+
+lr_target_df.30h%>%head(n=20)
+```
+
+```{r Network_CorFiltering}
+# Infer the interaction network including the DE target genes
+network.8h <- infer_intercellular_regulatory_network(
+  lr_target_df.8h, prioritized_tbl_oi_all_top50.8h)
+network.30h <- infer_intercellular_regulatory_network(
+  lr_target_df.30h, prioritized_tbl_oi_all_top50.30h)
+
+# Check the links that are present in the network
+network.8h$links %>%
+  head(n=20)
+sprintf("Number of links prioritized in 8h of stimulation: %i", dim(network.8h$links)[1])
+network.30h$links %>%
+  head(n=20)
+sprintf("Number of links prioritized in 30h of stimulation: %i", dim(network.30h$links)[1])
+
+# Check the nodes that are present in the network
+network.8h$nodes %>%
+  head(n=20)
+sprintf("Number of nodes prioritized in 8h of stimulation: %i", dim(network.8h$nodes)[1])
+network.30h$nodes %>%
+  head(n=20)
+sprintf("Number of nodes prioritized in 30h of stimulation: %i", dim(network.30h$nodes)[1])
+``` 
+
+
+```{r PlotNetwork, fig.height=10, fig.width=30}
+# Generate the plot for the network visualization
+network_graph.8h <- visualize_network(network.8h, colors_sender)
+network_graph.30h <- visualize_network(network.30h, colors_sender)
+
+# Show graph plots
+network_graph.8h$plot + labs(title = "8h")
+network_graph.30h$plot + labs(title = "30h")
+``` 
+
+### 2.2. Selection based on top interactions and correlation cut-off
+
+```{r FilterTop50_CorPrior_Interactions}
+# Extract the top 50 interactions that are also present in the prioritization network based on the pearson correlation filtering
+prioritized_tbl_oi_network.8h<- prioritized_tbl_oi_all_top50.8h %>%
+  inner_join(network.8h$prioritized_lr_interactions)
+prioritized_tbl_oi_network.30h<- prioritized_tbl_oi_all_top50.30h %>%
+  inner_join(network.30h$prioritized_lr_interactions)
+
+# Retained interactions
+sprintf("Final number of filtered interactions - 8h")
+table(prioritized_tbl_oi_network.8h$group)
+print("Final number of filtered interactions - 30h")
+table(prioritized_tbl_oi_network.30h$group)
+``` 
+
+It might seem interesting to increase the number of retained top interactions, however this is not the limiting factor in this inner_join. The number of final interactions is the same as what was observed as unique interactions in specific conditions focusing on the network (including target genes as well). 
+
+```{r BubblePlot_FilterInteractions, fig.height = 10, fig.width = 10}
+BubblePlot_prior_network.8h<-lapply(unique(network.8h$prioritized_lr_interactions$group),
+       function(group_oi){
+         tmp_prior_tbl <- prioritized_tbl_oi_network.8h%>%
+           filter(group == group_oi)
+         
+         plot_oi <- make_sample_lr_prod_activity_plots_Omnipath(
+           multinichenet_output_8h$prioritization_tables,
+           tmp_prior_tbl %>% inner_join(lr_network_all)
+         )
+         plot_oi + 
+           labs(title = group_oi)
+       })
+BubblePlot_prior_network.30h<-lapply(unique(network.30h$prioritized_lr_interactions$group),
+       function(group_oi){
+         tmp_prior_tbl <- prioritized_tbl_oi_network.30h%>%
+           filter(group == group_oi)
+         
+         plot_oi <- make_sample_lr_prod_activity_plots_Omnipath(
+           multinichenet_output_30h$prioritization_tables,
+           tmp_prior_tbl %>% inner_join(lr_network_all)
+         )
+         plot_oi + 
+           labs(title = group_oi)
+       })
+```
+
+```{r BubblePlot_FilteredInteractions_OverAllStim, fig.height=10, fig.width=10}
+# 8h
+BubblePlot_prior_network.8h.Merged<-make_sample_lr_prod_activity_plots_Omnipath(
+  multinichenet_output_8h$prioritization_tables,
+  prioritized_tbl_oi_network.8h %>% 
+    inner_join(lr_network_all))+
+  labs(title = "8h")
+
+pdf(file = file.path(params$path_output,
+                           paste0("BubblePlot_NetworkBasedPrior_8h_", params$date, ".pdf")),
+    width =17, height=10)
+BubblePlot_prior_network.8h.Merged
+dev.off()
+
+# 30h
+BubblePlot_prior_network.30h.Merged<-make_sample_lr_prod_activity_plots_Omnipath(
+  multinichenet_output_30h$prioritization_tables,
+  prioritized_tbl_oi_network.30h %>% 
+    inner_join(lr_network_all))+
+  labs(title = "30h")
+
+pdf(file = file.path(params$path_output,
+                           paste0("BubblePlot_NetworkBasedPrior_30h_", params$date, ".pdf")),
+    width =17, height=10)
+BubblePlot_prior_network.30h.Merged
+dev.off()
+```
+
+
+## 3. Selection of LR-interactions based on intercellular regulatory network for each stimulatory condition separately
+
+### 3.1. Filtering of target genes based on LR-target expression correlation 
+
+The ligand-receptor interactions are filtered out based on correlation value. Downstream target genes linked to the LR-interactions of interaction that both show high expression correlation (pearson correlation > 0.33) and have some prior knowledge to support their link are retained to filter out more accurate LR-interactions.
+
+This step is similar to what was performed in paragraph 2.1, but now we only focus on the top 50 interactions of each of the stimulatory conditions separately, to get a prioritization per condition.
+
+```{r CorFiltering_LRInteractions_8h_PerCond}
+# Top n interactions that need to be prioritized
+Sel_top<-50
+# Extract names of the distinct groups of interest
+groups<-multinichenet_output_8h$prioritization_tables$group_prioritization_table_source$group%>%
+    unique
+## 8h
+# Selection of the top 50 interactions per stimulatory condition
+prioritized_tbl_oi_PerCond_top50.8h<- lapply(
+  groups,
+  FUN = function(group_oi){
+    get_top_n_lr_pairs(
+      multinichenet_output_8h$prioritization_tables,
+      top_n = Sel_top,
+      groups_oi = group_oi)})
+# Make sure the naming of the list is correct
+names(prioritized_tbl_oi_PerCond_top50.8h)<-groups
+
+## 30h
+# Selection of the top 50 interactions per stimulatory condition
+prioritized_tbl_oi_PerCond_top50.30h<- lapply(
+  groups,
+  FUN = function(group_oi){
+    get_top_n_lr_pairs(
+      multinichenet_output_30h$prioritization_tables,
+      top_n = Sel_top,
+      groups_oi = group_oi)})
+# Make sure the naming of the list is correct
+names(prioritized_tbl_oi_PerCond_top50.30h)<-groups
+```
+
+In the following step, instead of using the overall top 50, the top 50 of each of the conditions is used to check for interesting interactions.
+
+```{r Network_CorFiltering_PriorPerCond}
+# Infer the interaction network including the DE target genes
+network_PerCond.8h <- lapply(X = groups, FUN = function(group_oi){
+  infer_intercellular_regulatory_network(
+  lr_target_df.8h, prioritized_tbl_oi_PerCond_top50.8h[[group_oi]])})
+names(network_PerCond.8h)<-groups
+network_PerCond.30h <- lapply(X = groups, FUN = function(group_oi){
+  infer_intercellular_regulatory_network(
+  lr_target_df.30h, prioritized_tbl_oi_PerCond_top50.30h[[group_oi]])})
+names(network_PerCond.30h)<-groups
+
+# Check the links that are present in the network
+network_PerCond.8h$IFNgamma$links %>%
+  head(n=20)
+sprintf("Number of links prioritized in 8h of stimulation: %i", dim(network_PerCond.8h$IFNgamma$links)[1])
+network_PerCond.30h$IFNgamma$links %>%
+  head(n=20)
+sprintf("Number of links prioritized in 30h of stimulation: %i", dim(network_PerCond.30h$IFNgamma$links)[1])
+
+# Check the nodes that are present in the network
+network_PerCond.8h$IFNgamma$nodes %>%
+  head(n=20)
+sprintf("Number of nodes prioritized in 8h of stimulation: %i", dim(network_PerCond.8h$IFNgamma$nodes)[1])
+network_PerCond.30h$IFNgamma$nodes %>%
+  head(n=20)
+sprintf("Number of nodes prioritized in 30h of stimulation: %i", dim(network_PerCond.30h$IFNgamma$nodes)[1])
+``` 
+
+
+### 3.2. Selection based on top interactions and correlation cut-off
+
+```{r FilterTop50_CorPrior_Interactions_PriorPerCond}
+# Extract the top 50 interactions that are also present in the prioritization network based on the pearson correlation filtering
+prioritized_tbl_oi_PerCond_network.8h<-lapply(X=groups,FUN=function(groups_oi){
+  prioritized_tbl_oi_PerCond_top50.8h[[groups_oi]] %>%
+  inner_join(network_PerCond.8h[[groups_oi]]$prioritized_lr_interactions)
+})
+names(prioritized_tbl_oi_PerCond_network.8h)<-groups
+
+prioritized_tbl_oi_PerCond_network.30h<-lapply(X=groups,FUN=function(groups_oi){
+  prioritized_tbl_oi_PerCond_top50.30h[[groups_oi]] %>%
+  inner_join(network_PerCond.30h[[groups_oi]]$prioritized_lr_interactions)
+})
+names(prioritized_tbl_oi_PerCond_network.30h)<-groups
+
+# Retained interactions
+sprintf("Final number of filtered interactions - 8h")
+sapply(X=groups, FUN=function(group_oi){
+  table(prioritized_tbl_oi_PerCond_network.8h[[group_oi]]$group)})
+print("Final number of filtered interactions - 30h")
+sapply(X=groups, FUN=function(group_oi){
+  table(prioritized_tbl_oi_PerCond_network.30h[[group_oi]]$group)})
+``` 
+
+### 3.3. Visualization of bubble plot for prioritized interactions
+```{r BubblePlot_FilterInteractions_PriorPerCond, fig.height = 10, fig.width = 20}
+# Generate bubble plot only of prioritized interactions
+BubblePlot_prior_PerCond_network.8h<-lapply(X=groups, FUN=function(group_oi){
+         tmp_prior_tbl <- prioritized_tbl_oi_PerCond_network.8h[[group_oi]]
+         plot_oi <- make_sample_lr_prod_activity_plots_Omnipath(
+           multinichenet_output_8h$prioritization_tables,
+           tmp_prior_tbl %>% inner_join(lr_network_all)
+         )
+         plot_oi + 
+           labs(title = group_oi)
+       })
+BubblePlot_prior_PerCond_network.30h<-lapply(X=groups, FUN=function(group_oi){
+         tmp_prior_tbl <- prioritized_tbl_oi_PerCond_network.30h[[group_oi]]
+         plot_oi <- make_sample_lr_prod_activity_plots_Omnipath(
+           multinichenet_output_30h$prioritization_tables,
+           tmp_prior_tbl %>% inner_join(lr_network_all)
+         )
+         plot_oi + 
+           labs(title = group_oi)
+       })
+
+# Rename lists
+names(BubblePlot_prior_PerCond_network.8h)<-groups
+names(BubblePlot_prior_PerCond_network.30h)<-groups
+
+# Visualize
+BubblePlot_prior_PerCond_network.8h
+BubblePlot_prior_PerCond_network.30h
+```
+
+
+### 3.4. Comparison with prioritized interactions
+
+```{r Comparison_PriorInt}
+# Extrqct the interaction IDs, including the LR interaction AND interacting cell types
+prioritized_tbl_oi_PerCond_network.8h.idList<-lapply(X=groups, FUN=function(group_oi){
+  prioritized_tbl_oi_PerCond_network.8h[[group_oi]][['id']]
+})
+names(prioritized_tbl_oi_PerCond_network.8h.idList)<-paste('8h', groups, sep = "_")
+
+prioritized_tbl_oi_PerCond_network.30h.idList<-lapply(X=groups, FUN=function(group_oi){
+  prioritized_tbl_oi_PerCond_network.30h[[group_oi]][['id']]
+})
+names(prioritized_tbl_oi_PerCond_network.30h.idList)<-paste('30h', groups, sep = "_")
+
+# Join the lists
+prioritized_tbl_oi_PerCond_network.idList<-c(prioritized_tbl_oi_PerCond_network.8h.idList,
+                                             prioritized_tbl_oi_PerCond_network.30h.idList)
+
+# Generation of combinations
+prioritized_tbl_oi_PerCond_network.combMat<-make_comb_mat(prioritized_tbl_oi_PerCond_network.idList)
+
+# Show upsetplot
+UpSet(prioritized_tbl_oi_PerCond_network.combMat,
+      top_annotation = HeatmapAnnotation(
+        "Intersection size" = anno_barplot(comb_size(prioritized_tbl_oi_PerCond_network.combMat),
+                                           border = FALSE,
+                                           gp = gpar(fill = "#595B5C",
+                                                     lty = "blank"), 
+                                           add_numbers = TRUE,
+                                           height = unit(4, "cm")),
+        annotation_name_side = "left",
+        annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+        "Set size" = anno_barplot(set_size(prioritized_tbl_oi_PerCond_network.combMat),
+                                  border = FALSE,
+                                  gp = gpar(fill = "#595B5C",
+                                            lty = "blank"), 
+                                  add_numbers = T,
+                                  width = unit(4, "cm")))
+      )
+```
+
+### 3.5. Final bubble plot generation
+```{r Fig4_FinalBubblePlotGeneration,fig.height=10, fig.width=15}
+# Merge all the dataframes with the prioritized interactions in one data frame
+tmp_AllPrior.8h<-do.call("rbind", prioritized_tbl_oi_PerCond_network.8h)
+tmp_AllPrior.30h<-do.call("rbind", prioritized_tbl_oi_PerCond_network.30h)
+
+# Save plots
+# 8h
+for (condition in names(BubblePlot_top50_PerCond.8h)){
+  pdf(file = file.path(params$path_output,
+                           paste0("BubblePlot_", condition,
+                                  "_Top50Interactions_8h_", params$date, ".pdf")),
+    width = 17, height=15)
+  print(BubblePlot_top50_PerCond.8h[[condition]])
+  dev.off()
+}
+
+# Visualize in a BubblePlot
+# 8h
+s
+# 30h
+pdf(file = file.path(params$path_output,
+                     paste0("BubblePlot_PriorInt_Top50PerStim_30h_", params$date, ".pdf")),
+    width=17, height=12)
+make_sample_lr_prod_activity_plots_Omnipath(
+           multinichenet_output_30h$prioritization_tables,
+           tmp_AllPrior.30h %>% inner_join(lr_network_all))
+dev.off()
+``` 

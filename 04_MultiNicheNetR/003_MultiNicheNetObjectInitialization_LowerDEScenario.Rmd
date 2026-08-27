@@ -1,0 +1,879 @@
+---
+title: "003_MultiNicheNetObjectInitialization_LowerDEScenario"
+author: "Tine D'hamers"
+date: "2026-04-07"
+output: html_document
+params: 
+  SeuratObj: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/002_NoBaseline/SeuratObjects/seuratObj_PatStim_NoBase_DoubletsRemoved.rds"
+  prefix_output: "PatStim_NoBase"
+  path_output: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/004_MultiNicheNetR/Objects"
+  date: "20260407"
+---
+
+# Rationale
+
+This file will be used to perform the data preprocessing and initialization of the data objects needed for the MultiNicheNet downstream analysis. Most of the analysis are similar to what was performed in the `001_MultiNicheNetObjectInitialization_8h.Rmd` and `001_MultiNicheNetObjectInitialization_30h.Rmd`files. However, updates in the analysis were performed based on the inputs of Ruth Seurinck during a meeting at 03/04/2026. Meeting notes can be found in my Drylab Notebook on scCITE-seq. Downstream analysis are performed on the final object in the `004_MultiNicheNet_LowerDE_CorrelationBasedFiltering.Rmd`. However, updates in the analysis were performed based on the inputs of Ruth Seurinck during a meeting at 03/04/2026. Meeting notes can be found in my Drylab Notebook on scCITE-seq.
+
+The adaptation included:
+
+- Switching the prioritization scenario from 'regular' to 'lower DE', in which the ligand actvitiy gets a highter weight and all the expression based features a lower weight in prioritization interactions
+- Prioritization based on correlations between ligand activity and up/down-regulation of the target genes in the receiver cell type
+
+# Start-up
+
+## Load libraries
+
+```{r Libraries}
+.libPaths("/kyukon/data/gent/vo/002/gvo00224/TOBI/Projects/SingleCellPipeline/resultsCeline/seuratintegrate/Rpackages/R_4.4.1-foss_2023b/")
+library(dplyr)
+library(tidyverse)
+options(bitmapType='cairo')
+library(Seurat)
+library(nichenetr)
+library("multinichenetr", 
+        lib.loc = "/kyukon/data/gent/vo/002/gvo00224/TOBI/Projects/SingleCellPipeline/resultsCeline/seuratintegrate/Rpackages/R_4.4.1-foss_2023b/")
+library(SingleCellExperiment)
+
+# Plots
+library(ggplot2)
+library(ggrepel)
+library(ggpubr)
+```
+
+Plotting Themes
+
+```{r PlotThemes}
+# Data visualization themes
+source("/kyukon/data/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Scripts/PlotThemes_sc_CVID.R")
+# Store colors for the distinct directions
+colDirection<-c("UP" = "darkgreen",
+                "DOWN" = "darkred",
+                "MIXED" = "#D5BBB1",
+                "NS" = "grey80")
+grid.grey = "grey95"
+```
+
+# 1. Preparation of MultiNicheNet core analysis
+
+## 1.1 Load NicheNet's ligand-receptor network and ligand-target matrix
+
+MultiNicheNet builds upon the NicheNet framework and uses the same prior knowledge networks (ligand-receptor network and ligand-target matrix, currently v2 version). These matrices and the Nichenet v2 networks are downloaded from Zenodo using the code below.
+
+```{r Network and matrix loading}
+# Specify the organism
+organism <- "human"
+
+# Time out option
+options(timeout = 120)
+
+# Extract the necessary data from Zenodo
+# Start with the ligand-receptor network
+lr_network_all <- readRDS(url( "https://zenodo.org/record/10229222/files/lr_network_human_allInfo_30112033.rds" )) %>%
+  # Converting aliases used in the reference to gene symbols, matching our data
+  mutate( ligand = convert_alias_to_symbols(ligand, organism = organism), 
+          receptor = convert_alias_to_symbols(receptor, organism = organism)) 
+
+lr_network_all <- lr_network_all %>% 
+  # Convert the nqmes in ligand names into valid names 
+  # Ths implies e.g. "-" are transformed in a "."
+  mutate(ligand = make.names(ligand), receptor = make.names(receptor)) 
+
+lr_network <- lr_network_all %>% 
+  # Only keep unique/distinct rows from a data frame to avoid the loss of genes in downstream visualizations
+  # Taking into account the combination of ligand and receptor
+  distinct(ligand, receptor) 
+
+# Ligand-target matrix (LARGE MATRIX!!)
+ligand_target_matrix <- readRDS(url( "https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final.rds" )) 
+
+# Convert colnames (ligands) into usable names
+colnames(ligand_target_matrix) <- colnames(ligand_target_matrix) %>% 
+  convert_alias_to_symbols(organism = organism) %>% 
+  make.names() 
+
+# Convert rownames (targets) into usable names
+rownames(ligand_target_matrix) <- rownames(ligand_target_matrix) %>% 
+  convert_alias_to_symbols(organism = organism) %>% 
+  make.names() 
+
+# Only use the ligands that are present in the ligand-target matrix for downstream analysis
+lr_network <- lr_network %>% 
+  filter(ligand %in% colnames(ligand_target_matrix)) 
+# Only use the ligands that are present in the ligand-receptor matrix for downstream analysis
+ligand_target_matrix <- ligand_target_matrix[, lr_network$ligand %>% unique()]
+```
+
+## 1.2 Read in the SingleCell Experiment Object
+
+Since we started from a Seurat object, this object is easily converted into a singleCellExperiment object via the code below. Because the NicheNet 2.0 networks are in the mose recent version of the official gene symbols, is is needed to update the gene symbols used in the expression data (converting from their aliases to official gene symbols). This makes the analysis compatible with the databases that are used and loaded above.
+
+```{r LoadSeuratObject}
+# Read in the data as a Seurat object
+IntData_NoDbl<-readRDS(params$SeuratObj)
+# Plot the data to visualize the UMAP
+DimPlot(IntData_NoDbl, reduction = "singlets.umap",
+        group.by = "Stimulation")+
+  themeG
+DimPlot(IntData_NoDbl, reduction = "singlets.umap",
+        group.by = "predicted.celltype.l1")+
+  themeG
+DimPlot(IntData_NoDbl, reduction = "singlets.umap",
+        group.by = "TimePoint")+
+  themeG
+
+# Transform to SingleCellExperiment object
+IntData_NoDbl.sce <- Seurat::as.SingleCellExperiment(x = IntData_NoDbl,
+                                                     assay = "RNA")
+
+# Convert the names to the correct symbols
+IntData_NoDbl.sce <- alias_to_symbol_SCE(IntData_NoDbl.sce, organism = organism)%>%
+  makenames_SCE()
+```
+
+**Remark**: Some gene labels were not stored in the `alias_to_symbol` reference (listed below). This was provided in a warning when running the last lines of code in the previous code block. This list of genes needs to be taken into account when interpreting the results at a later stage in the downstream analysis steps. Most of these genes start with "AC" or "AL" followed by a number. This indicates that these genes are most of the time not fully described yet, and therefore don't have an universal gene symbol yet.
+
+## 1.3 Prepare the settings of MulitNicheNet cell-cell communication analysis
+
+In this step, the research question is formulated into MultiNicheNet input arguments. This include contrast definition for the comparison between conditions of interest. In this case, we will be looking at the differences in ligand-receptor interactions when comparing the stimulated conditions to the unstimulated controls in pairwise test.
+
+### 1.3.1 Define in which metadata columns we can find the **group, sample** and **cell type** IDs
+
+If cells are annotated in multiple hierarchical levels, it is recommended using a relatively high level in the hierarchy. This for 2 reasons:
+
+1)  MultiNicheNet focuses on **differential expression** and not differential abundance
+2)  There should be **sufficient cells per sample-celltype combination** (see later).
+
+The sample-id is uniquely assigned to only one condition/group of interest. Therefore the `PatStim` annotation is used as input for the `sample_id` variable. This is a combination of the `PatientID` and the `Stimulation` linked to that particular cell, resulting in an unique sample-id per condition/group of interest.
+
+```{r ArgumentDefining}
+# Sample names (based on donors)
+sample_id <- "PatStim"
+# Group IDs of interest
+group_id <- "Stimulation"
+# Cell type of interest
+# Recommended to use a relatively high level in the hierarchy 
+celltype_id <- "NoDbl_ManAnnot_L1_RNA"
+
+# Make sure these names are syntactically valid (remove the "/" from the CD3/CD28 stimulation)
+IntData_NoDbl.sce$Stimulation <- IntData_NoDbl.sce$Stimulation%>%
+  gsub(pattern = "/", replacement = "")
+IntData_NoDbl.sce$PatStim <- IntData_NoDbl.sce$PatStim%>%
+  gsub(pattern = "/", replacement = "")
+IntData_NoDbl.sce$NoDbl_ManAnnot_L1_RNA <- IntData_NoDbl.sce$NoDbl_ManAnnot_L1_RNA %>% 
+  make.names()
+
+# No covariates or batch effects need to be corrected for
+covariates <- NA
+batches <- NA
+```
+
+### 1.3.2 Define contrasts of interest
+
+In this analysis, we want to compare the distinct stimulatory conditions to the unstimulated controls.
+
+**VERY IMPORTANT**: The format to indicate the contrasts should be adhered to very strictly, and white spaces are not allowed. The most important points are that
+
+- Each contrast is surrounded by single quotation marks 
+- Contrasts are separated by a comma without any white space
+- All contrasts together are surrounded by double quotation marks
+- If you compare against X groups, you should divide by X
+
+```{r Contrasts}
+# Contrast definition
+# contrast_oi <- paste0("'", sort(unique(IntData_NoDbl.sce$Stimulation))[-5], "-Unstimulated", "'", collapse =",")
+contrast_oi <- c("'CD3CD28_beads-Unstimulated','IFNgamma-Unstimulated','MegaCD40L-Unstimulated','ODN2006-Unstimulated'")
+
+contrast_tbl <-tibble(contrast =
+                        c("CD3CD28_beads-Unstimulated","IFNgamma-Unstimulated",
+                          "MegaCD40L-Unstimulated","ODN2006-Unstimulated"),
+                      group = c("CD3CD28_beads", "IFNgamma", "MegaCD40L",  "ODN2006"))
+
+contrast_oi
+contrast_tbl
+```
+
+### 1.3.3 Define the sender and receiver cell types of interest
+
+It is recommended to consider all cell types as potential senders and receivers, if sufficient computational resources and no specific idea of cell-type co-localization.
+
+```{r SenderReceiver}
+# Define the senders
+senders_oi <- SummarizedExperiment::colData(IntData_NoDbl.sce)[,"NoDbl_ManAnnot_L1_RNA"] %>%
+  unique()
+# Define the receivers
+receivers_oi <- SummarizedExperiment::colData(IntData_NoDbl.sce)[,"NoDbl_ManAnnot_L1_RNA"]%>%
+  unique()
+
+# Filtering out the other.T cells for both senders and receivers
+senders_oi<-senders_oi[senders_oi!="other.T"]
+receivers_oi<-receivers_oi[receivers_oi!="other.T"]
+
+senders_oi
+receivers_oi
+
+# Select the senders and receivers of interest within the cell types
+# In this case, this will not change the SCE object
+dim(IntData_NoDbl.sce)
+IntData_NoDbl.sce <- IntData_NoDbl.sce[,SummarizedExperiment::colData(IntData_NoDbl.sce)[,"NoDbl_ManAnnot_L1_RNA"] %in% 
+                                         c(senders_oi, receivers_oi)]
+dim(IntData_NoDbl.sce)
+```
+
+All conditions are of interest in this comparison. However, I will select here the the part of the SCE object containing only the cells stimulated for 8h and 30h since the analysis for both incubation time points will be conducted separately.
+
+```{r Select8hStim}
+# Select 8h stimulated cells only
+IntData_NoDbl_8h.sce <- IntData_NoDbl.sce[, SummarizedExperiment::colData(IntData_NoDbl.sce)[,"TimePoint"] %in% "8"]
+# Select 8h stimulated cells only
+IntData_NoDbl_30h.sce <- IntData_NoDbl.sce[, SummarizedExperiment::colData(IntData_NoDbl.sce)[,"TimePoint"] %in% "30"]
+# Check final SCE object
+dim(IntData_NoDbl_8h.sce)
+dim(IntData_NoDbl_30h.sce)
+
+# Clean up some data sets
+rm(IntData_NoDbl.sce, IntData_NoDbl)
+```
+
+# 2. Running the MultiNicheNet core analysis
+
+Multiple analysis steps are taken in the following paragraphs:
+
+1. **Cell-type filtering**: Determine which cell types are sufficiently present for downstream analysis 
+2. **Gene filtering **: Determine which genes are sufficiently expressed in each present cell type
+3. **Pseudobulk expression calculation**: Determine and normalize per-sample pseudobulk expression levels for each expressed gene in each present cell type
+4. **Differential expression analysis**: Determine which genes are differentially expressed
+5. **Ligand activity prediciton **: Use the DE analysis output to predict the activity of ligands in receiver cell types and infer their potential target genes
+6. **Prioritization**: rank cell-cell communication patterns through multi-criteria prioritization
+
+## 2.1 Cell-type filtering: determine which cell types are sufficiently present
+In this step we will calculate and visualize cell type abundances. This will give an indication about which cell types will be retained in the analysis, and which cell types will be filtered out.
+
+Setting the `min_cells = 10` is recommended.
+
+```{r CellTypeFiltering}
+# Set the number of minimal cells for a specific cell type for exclusion
+min_cells = 10
+# Calculate the abundance of the cell types of interest
+abundance_info_8h <- get_abundance_info(
+  sce = IntData_NoDbl_8h.sce,
+  sample_id = sample_id,
+  group_id = group_id,
+  celltype_id = celltype_id,
+  min_cells = min_cells,
+  senders_oi = senders_oi,
+  receivers_oi = receivers_oi,
+  batches = batches
+)
+abundance_info_30h <- get_abundance_info(
+  sce = IntData_NoDbl_30h.sce,
+  sample_id = sample_id,
+  group_id = group_id,
+  celltype_id = celltype_id,
+  min_cells = min_cells,
+  senders_oi = senders_oi,
+  receivers_oi = receivers_oi,
+  batches = batches
+)
+```
+
+```{r CellTypeAbundance_Histograms, fig.height=7, fig.width=10}
+# Visualization of cell type abundance
+abundance_info_8h$abund_plot_sample
+abundance_info_30h$abund_plot_sample
+
+abundance_info_8h$abund_plot_group
+abundance_info_30h$abund_plot_group
+```
+
+For 8h of stimulation, the sample _HC2_MegaCD40L_ does not show any NK cells and will therefore also be excluded. The minimum number of cells per cell type (set to 10) fits perfectly for this data set. The same is true for some of the samples stimulated for 30h with distinct conditions.
+
+```{r AbsentCellTypeDefinition_Abundance}
+# Check which samples are retained and which are filtered out
+abundance_df_summarized_8h <- abundance_info_8h$abundance_data%>%
+  mutate(keep = as.logical(keep)) %>%
+  group_by(group_id, celltype_id)%>%
+  summarise(samples_present = sum(keep))
+ggplot(data = abundance_df_summarized_8h,
+       mapping = aes(x = samples_present, y = group_id, fill = samples_present))+
+  geom_col(width = 0.1)+
+  facet_grid(.~celltype_id)+
+  scale_fill_gradientn(colours = c("red","pink","purple","blue"))+
+  themeG+ 
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = "none")+
+  labs(title = "8h")
+
+# Check which samples are retained and which are filtered out
+abundance_df_summarized_30h <- abundance_info_30h$abundance_data%>%
+  mutate(keep = as.logical(keep)) %>%
+  group_by(group_id, celltype_id)%>%
+  summarise(samples_present = sum(keep))
+ggplot(data = abundance_df_summarized_30h,
+       mapping = aes(x = samples_present, y = group_id, fill = samples_present))+
+  geom_col(width = 0.1)+
+  facet_grid(.~celltype_id)+
+  scale_fill_gradientn(colours = c("red","pink","purple","blue"))+
+  themeG+ 
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = "none")+
+  labs(title="30h")
+
+# Check cell type for which none of the samples is retained
+celltypes_absent_one_condition_8h <- abundance_df_summarized_8h%>%
+  filter(samples_present == 0)%>%
+  pull(celltype_id) %>%
+  unique()
+message("Cell type for which none of the samples is retained at 8h of stimulation: ", celltypes_absent_one_condition_8h)
+celltypes_absent_one_condition_30h <- abundance_df_summarized_30h%>%
+  filter(samples_present == 0)%>%
+  pull(celltype_id) %>%
+  unique()
+message("Cell type for which none of the samples is retained at 30h of stimulation: ", celltypes_absent_one_condition_30h)
+
+# Check samples present in at least 2 samples of one group (really present in at least one condition)
+celltypes_present_one_condition_8h<- abundance_df_summarized_8h%>%
+  filter(samples_present >= 2) %>%
+  pull(celltype_id) %>%
+  unique()
+print(paste0("Cell type for which at least one of the samples is retained at 8h of stimulation: ", celltypes_present_one_condition_8h))
+celltypes_present_one_condition_30h<- abundance_df_summarized_30h%>%
+  filter(samples_present >= 2) %>%
+  pull(celltype_id) %>%
+  unique()
+print(paste0("Cell type for which at least one of the samples is retained at 8h of stimulation: ", celltypes_present_one_condition_30h))
+
+# Check if overlap in conditions concerning the absence and presence of some celltypes exists
+condition_specific_celltypes_8h <-
+  intersect(celltypes_present_one_condition_8h,
+            celltypes_absent_one_condition_8h)
+condition_specific_celltypes_30h <-
+  intersect(celltypes_present_one_condition_30h,
+            celltypes_absent_one_condition_30h)
+
+# Total number of conditions in the dataset
+total_nr_conditions_8h <- SummarizedExperiment::colData(IntData_NoDbl_8h.sce)[,group_id]%>%
+  unique() %>% length()
+total_nr_conditions_30h <- SummarizedExperiment::colData(IntData_NoDbl_30h.sce)[,group_id]%>%
+  unique() %>% length()
+
+# Check absent celltypes - will be filtered out
+absent_celltypes_8h <- abundance_df_summarized_8h %>%
+  filter(samples_present < 2)%>%
+  group_by(celltype_id)%>%
+  dplyr::count()%>%
+  filter(n == total_nr_conditions_8h)%>%
+  pull(celltype_id)
+absent_celltypes_30h <- abundance_df_summarized_30h %>%
+  filter(samples_present < 2)%>%
+  group_by(celltype_id)%>%
+  dplyr::count()%>%
+  filter(n == total_nr_conditions_30h)%>%
+  pull(celltype_id)
+
+print(paste0("Total number of conditions at 8h of stimulation: ", total_nr_conditions_8h))
+print(paste0("Total number of conditions at 30h of stimulation: ", total_nr_conditions_30h))
+print(paste0("Absent celltypes at 8h of stimulation: ", absent_celltypes_8h))
+print(paste0("Absent celltypes at 30h of stimulation: ", absent_celltypes_30h))
+```
+
+Since all of the cell types were retained for both incubation time points, the **following code is not run** and all the cell types that were previously selected for were retained.
+
+```{r AbsentCellType_Filtering, eval=FALSE}
+# Focus on celltypes linked to specific conditions
+# This is turned of here
+analyse_condition_specific_celltypes <- FALSE
+
+# This approach needs to be revised in other data sets
+# For this dataset both options will result in the same object since no condition-specific
+# celltypes were identified
+if(analyse_condition_specific_celltypes == TRUE){
+  # Filter out the cell types that are absent
+  senders_oi <- senders_oi %>% setdiff(absent_celltypes)
+  receivers_oi <- receivers_oi %>% setdiff(absent_celltypes)
+} else {
+  # Fitler out the cell types that are absent AND condition specific
+  senders_oi <- senders_oi %>%
+    setdiff(union(absent_celltypes, condition_specific_celltypes))
+  receivers_oi <- receivers_oi %>%
+    setdiff(union(absent_celltypes, condition_specific_celltypes))
+}
+
+# Filter out only the celltypes of interest
+# IntData_NoDbl_8h.sce <- IntData_NoDbl_8h.sce[, SummarizedExperiment::colData(IntData_NoDbl_8h.sce)[, celltype_id] %in%
+#                                                c(senders_oi, receivers_oi)]
+```
+
+## 2.2 Gene filtering: determine which genes are sufficiently expressed in each present cell type
+
+The genes will be considered and retained if they are expressed in at least at `min_sample_prop` fraction of the samples in the condition with the lowest number of samples. The default `min_sample_prop=0.50` is recommended to use. This means that genes should be expressed in at least 2 samples if the group with lowest nr. of samples has 4 samples. In this dataset, 3 is the minimal number of samples that is retained for a specific condition (MegaCD40L), therefore the genes should be expressed in at least 1.5 (propably 2) samples.
+
+To define which genes are expressed in a sample, the genes with non-zero expression values in the `fraction_cutoff` fraction of cells of that cell type in that specific sample will be considered. By default, the `fraction_cutoff=0.05` is used, meaning that genes should show non-zero expression values in a at least 5% of cells in that sample. It is explicitly recommended to not use `fraction_cutoff>0.1`.
+
+```{r GeneFiltering}
+# Set parameters as described above
+min_sample_prop <- 0.5
+fraction_cutoff <- 0.05
+
+# Calculate information needed for gene filtering
+frq_list_8h <- get_frac_exprs(
+  sce = IntData_NoDbl_8h.sce,
+  sample_id = sample_id,
+  celltype_id = celltype_id,
+  group_id = group_id,
+  batches = batches,
+  min_cells = min_cells,
+  fraction_cutoff = fraction_cutoff, 
+  min_sample_prop = min_sample_prop
+)
+frq_list_30h <- get_frac_exprs(
+  sce = IntData_NoDbl_30h.sce,
+  sample_id = sample_id,
+  celltype_id = celltype_id,
+  group_id = group_id,
+  batches = batches,
+  min_cells = min_cells,
+  fraction_cutoff = fraction_cutoff, 
+  min_sample_prop = min_sample_prop
+)
+
+# Keep genes that are expressed by at least one cell type
+genes_oi_8h <- frq_list_8h$expressed_df %>%
+  filter(expressed == T) %>%
+  pull(gene) %>%
+  unique()
+genes_oi_30h <- frq_list_30h$expressed_df %>%
+  filter(expressed == T) %>%
+  pull(gene) %>%
+  unique()
+
+IntData_NoDbl_8h.sce <- IntData_NoDbl_8h.sce[genes_oi_8h,]
+IntData_NoDbl_30h.sce <- IntData_NoDbl_30h.sce[genes_oi_30h,]
+```
+
+# 2.3 Pseudobulk expression calculation: determine and normalize per-sample pseudobulk expression levels for each expressed gene in each present cell type
+
+To enable prioritization score calculation of the distinct interactions, multiple analysis are performed upfront. 
+
+1. Determine and normalize per-sample pseudobulk expression levels for each expressed gene in each present cell type
+
+In this part, the pseudobulk expression levels in each of the present cell types are determined and normalized. The function `process_abundance_expression_info` will link this expression information for ligands of the sender cell types to the corresponding receptors of the receiver cell types. This will later enable to define cell-type specificity criteria for ligands and receptors.
+
+These pseudobulk expression levels are calculated per group (in our case the stimulatory conditions) and cell types. The overall expression per sample is stored in a final dataframe.
+
+```{r PseudobulkExpression}
+# Normalized pseudobulk expression values per gene/celltype/sample
+abundance_expression_info_8h <- process_abundance_expression_info(
+  sce = IntData_NoDbl_8h.sce,
+  sample_id = sample_id,
+  group_id = group_id,
+  celltype_id = celltype_id,
+  min_cells = min_cells,
+  senders_oi = senders_oi, 
+  receivers_oi = receivers_oi,
+  lr = lr_network,
+  batches = batches,
+  frq_list = frq_list_8h,
+  abundance_info = abundance_info_8h)
+abundance_expression_info_30h <- process_abundance_expression_info(
+  sce = IntData_NoDbl_30h.sce,
+  sample_id = sample_id,
+  group_id = group_id,
+  celltype_id = celltype_id,
+  min_cells = min_cells,
+  senders_oi = senders_oi, 
+  receivers_oi = receivers_oi,
+  lr = lr_network,
+  batches = batches,
+  frq_list = frq_list_30h,
+  abundance_info = abundance_info_30h)
+
+# 1. Inspect the normalized pseudobulk (pb) expression"
+abundance_expression_info_8h$celltype_info$pb_df %>% head()
+abundance_expression_info_30h$celltype_info$pb_df %>% head()
+
+# 2. Inspect the average of these sample-levels expression values per condition/group 
+abundance_expression_info_8h$celltype_info$pb_df_group %>% head()
+abundance_expression_info_30h$celltype_info$pb_df_group %>% head()
+
+# 3. Inspect values for ligand-receptero interactions per sample
+abundance_expression_info_8h$sender_receiver_info$pb_df %>% head()
+abundance_expression_info_30h$sender_receiver_info$pb_df %>% head()
+```
+
+# 2.4 Differential expression (DE) analysis: determine which genes are differentially expressed
+
+For this step, the genome-wide differential expression analysis of receiver and sender cell types to define DE genes between conditions of interest (as formalized by the `contrasts_oi`) is performed. Based on this analysis, the levels of differential expression of ligands in senders and receptors in receivers will be defined, next to the set of affected target genes in the receiver cell types (which will be used for the ligand activity analysis).
+
+Pseudobulking will be applied, followed by EdgeR to perform multi-condition multi-sample differential expression analysis (using the pseudobulk data)
+
+```{r DE_EdgeR_pseudobulk}
+# Perform DE analysis using EdgeR (differential expression on bulk samples)
+DE_info_8h <- get_DE_info(
+  sce = IntData_NoDbl_8h.sce,
+  sample_id = sample_id, 
+  group_id = group_id, 
+  celltype_id = celltype_id, 
+  batches = batches, 
+  covariates = covariates, 
+  contrasts_oi = contrast_oi, 
+  min_cells = min_cells, 
+  expressed_df = frq_list_8h$expressed_df)
+DE_info_30h <- get_DE_info(
+  sce = IntData_NoDbl_30h.sce,
+  sample_id = sample_id, 
+  group_id = group_id, 
+  celltype_id = celltype_id, 
+  batches = batches, 
+  covariates = covariates, 
+  contrasts_oi = contrast_oi, 
+  min_cells = min_cells, 
+  expressed_df = frq_list_30h$expressed_df)
+```
+
+# 2.4.1 Check DE results
+
+Check De output information in table with logFC and p-values for each gene-celltype contrast.
+
+```{r DEContrasts, fig.height=5, fig.width=10}
+# Extract values
+DE_info_8h$celltype_de$de_output_tidy %>% head()
+DE_info_30h$celltype_de$de_output_tidy %>% head()
+
+# Show histogram of p-values
+DE_info_8h$hist_pvals
+DE_info_30h$hist_pvals
+```
+This shows the same results as obtained in the original approach. An left-inflated histogram shows that their is a uniform distribution for p-values larger than the significance value. However an increased number of p-values is observed at the left of the histigram (<0.05) showing that indeed there are differentially expressed genes. Since these p-values look regular, no emperical estimates are performed.
+
+```{r EmpiricalPValues}
+# Estimation of empirical values is for this data set not needed
+empirical_pval = FALSE
+
+if(empirical_pval == TRUE){
+  # 8h
+  DE_info_emp_8h <- get_empirical_pvals(DE_info_8h$celltype_de$de_output_tidy)
+  celltype_de_8h <- DE_info_emp_8h$de_output_tidy_emp %>%
+    select(-p_val, -p_adj) %>%
+    dplyr::rename(p_val = p_emp, p_adj = p_adj_emp)
+  # 30h
+  DE_info_emp_30h <- get_empirical_pvals(DE_info_30h$celltype_de$de_output_tidy)
+  celltype_de_30h <- DE_info_emp_30h$de_output_tidy_emp %>%
+    select(-p_val, -p_adj) %>%
+    dplyr::rename(p_val = p_emp, p_adj = p_adj_emp)
+} else {
+  celltype_de_8h <-DE_info_8h$celltype_de$de_output_tidy
+  celltype_de_30h <-DE_info_30h$celltype_de$de_output_tidy
+}
+
+celltype_de_8h %>% head()
+celltype_de_30h %>% head()
+```
+
+## 2.4.2 Combine DE information for ligand-senders and receptors-receivers
+
+To end this step, the De information of senders and receivers will be combined by linking their ligands and receptors together based on the prior knowledge ligande-receptor network.
+
+```{r DE_LR}
+# Linking DE data to the ligand-receptor network
+sender_receiver_de_8h <- combine_sender_receiver_de(
+  sender_de = celltype_de_8h, 
+  receiver_de = celltype_de_8h, 
+  senders_oi = senders_oi, 
+  receivers_oi = receivers_oi, 
+  lr_network = lr_network )
+sender_receiver_de_30h <- combine_sender_receiver_de(
+  sender_de = celltype_de_30h, 
+  receiver_de = celltype_de_30h, 
+  senders_oi = senders_oi, 
+  receivers_oi = receivers_oi, 
+  lr_network = lr_network )
+
+# Show values
+sender_receiver_de_8h %>% head()
+sender_receiver_de_30h %>% head()
+```
+
+# 2.5 Ligand activity prediction: use the DE analysis output to predict the activity of ligands in receiver cell types and infer their potential target genes
+
+In this step, the NicheNet ligand activities and NicheNet ligand-target links based on these differential expression results will be predicted. This is performed to prioritize interactions based on their predicted effect on a receiver cell type. It is assumed that the most important group-specific interactions are those that lead to group-specific gene expression changes in a receiver cell type.
+
+The ratio geneset_oi/background should ideally be between 1/200 and 1/10 (or close to these ratios). To determine the genesets of interest based on the DE output, logFC and p-values are defined per cell type or contrast combination. In general, it is recommended to inspect the number of DE genes for all cell types based on the default threshold and adapting accordingly. By default, the p-value cutoff is applied on the normal p-values without correction for multiple testing. If the smallest group >= 20 samples, it is typically recommended using `p_val_adj = TRUE`. When the biological difference between the conditions is very large, it is typically recommended increasing the `logFC_threshold` and/or using `p_val_adj = TRUE`.
+
+# 2.5.1 Assess geneset_oi vs background ratios for different DE output thresholds prior to the NicheNet ligand activity analysis
+
+```{r genesetsVSbackground}
+# Setting parameters
+logFC_threshold = 0.50
+p_val_threshold = 0.05
+p_val_adj = FALSE
+
+# Gene set assessment 
+geneset_assessment_8h <- contrast_tbl$contrast %>%
+  lapply(
+    process_geneset_data,
+    celltype_de_8h, 
+    logFC_threshold, 
+    p_val_adj,
+    p_val_threshold
+  )
+geneset_assessment_30h <- contrast_tbl$contrast %>%
+  lapply(
+    process_geneset_data,
+    celltype_de_30h, 
+    logFC_threshold, 
+    p_val_adj,
+    p_val_threshold
+  )
+
+# Check output
+geneset_assessment_8h
+geneset_assessment_30h
+```
+
+## 2.5.2 Perform the ligand activity analysis and ligand-target inference
+
+The predicted target genes of these ligands in each contrast will be predicted as well. For this ligand-target inference procedure, a selection of the top n of the predicted target genes will be considered (here: top 250 targets per ligand). This parameter will not affect the ligand activity predictions. It will only affect ligand-target visualizations and construction of the intercellular regulatory network during the downstream analysis. It is recommended to test other settings in case it is prefered to explore fewer, but more confident target genes, or vice versa.
+
+```{r LigandActivity}
+# This code block might take some time (15 minutes)
+# Define the number of top predicted target genes
+top_n_target <- 250
+
+# Define the number of cores that can be used in this analysis (to speed up the process)
+verbose <- TRUE
+cores_system <- 13
+n.cores <- min(cores_system, celltype_de_8h$cluster_id %>%
+                 unique() %>%
+                 length())
+
+# Run the ligand activity prediction
+ligand_activity_targets_DEgenes_8h <- suppressMessages(suppressWarnings(
+  get_ligand_activities_targets_DEgenes(
+    receiver_de = celltype_de_8h, 
+    receivers_oi = intersect(receivers_oi, celltype_de_8h$cluster_id %>% unique()), 
+    ligand_target_matrix = ligand_target_matrix, 
+    logFC_threshold = logFC_threshold, 
+    p_val_threshold = p_val_threshold, 
+    p_val_adj = p_val_adj, 
+    top_n_target = top_n_target, 
+    verbose = verbose, 
+    n.cores = n.cores
+  )
+))
+ligand_activity_targets_DEgenes_30h <- suppressMessages(suppressWarnings(
+  get_ligand_activities_targets_DEgenes(
+    receiver_de = celltype_de_30h, 
+    receivers_oi = intersect(receivers_oi, celltype_de_30h$cluster_id %>% unique()), 
+    ligand_target_matrix = ligand_target_matrix, 
+    logFC_threshold = logFC_threshold, 
+    p_val_threshold = p_val_threshold, 
+    p_val_adj = p_val_adj, 
+    top_n_target = top_n_target, 
+    verbose = verbose, 
+    n.cores = n.cores
+  )
+))
+
+# Check the output
+ligand_activity_targets_DEgenes_8h$ligand_activities %>% head(20)
+ligand_activity_targets_DEgenes_30h$ligand_activities %>% head(20)
+```
+
+# 2.6 Prioritization: rank cell-cell communication patterns through multi-criteria prioritization
+
+The following criteria will be used to prioritize ligand-receptor interactions:
+
+- Upregulation of the ligand in a sender cell type and/or upregulation of the receptor in a receiver cell type - in the condition of interest.
+- Cell-type specific expression of the ligand in the sender cell type and receptor in the receiver cell type in the condition of interest (to mitigate the influence of upregulated but still relatively weakly expressed ligands/receptors).
+- Sufficiently high expression levels of ligand and receptor in many samples of the same group.
+- High NicheNet ligand activity, to further prioritize ligand-receptor pairs based on their predicted effect of the ligand-receptor interaction on the gene expression in the receiver cell type.
+
+These prioritization criteria will be combined in a **single aggregated prioritization score**.
+
+Multiple settings for weighing these criteria are provided:
+
+- `scenario = "regular"`: Each criteria is weighed equally (strongly recommended).
+- `scenario = lower_DE"`: Halving the weight for DE criteria and doubles the weight for ligand activity`, if differential CCC patterns in the data are less likely to be driven by DE.
+- `scenario = "no_frac_LR_Expr"`: Ignoring the criterion "Sufficently high expression levels of ligand and receptor in many samples of the same group", interesting if the data has limited number of samples and no penalization interactions should be taken into account (recommended for limited number of samples).
+
+
+Two choices are provided concerning the ligand activity regulation of when prioritizing ligands:
+
+- `ligand_activity_down = FALSE`: Prioritize of ligands that **only induce upregulation of target genes**, easier to interprete.
+- `ligand_activity_down = TRUE`: Prioritization of ligands leading to **both up- and downregulation** of the target genes, harder to interprete but might be of interest to also highlight interactions that can also repress gene expression.
+
+```{r CCCPrioritization}
+# For now, only check the interactions leading to upregulation of the target genes
+# This might be chanced in later analysis
+ligand_activity_down <- FALSE
+
+# Scenario used
+# This is adapted based on the feedback of Ruth Seurinck (meeting 03/04/2026)
+scenario <- "lower_DE"
+
+# Extract the possible sender-receiver interactions (unique rows)
+# These are the same for both time points
+sender_receiver_tbl <- sender_receiver_de_8h %>% 
+  distinct(sender, receiver)
+
+# Extract the metadata form the SCE object as tibble instead of dataframe
+metadata_combined_8h <- SummarizedExperiment::colData(IntData_NoDbl_8h.sce)%>%
+  tibble::as_tibble()
+metadata_combined_30h <- SummarizedExperiment::colData(IntData_NoDbl_30h.sce)%>%
+  tibble::as_tibble()
+
+# Extract the distinct groups (combination of sample, group and batches)
+if(!is.na(batches)){ 
+  # 8h
+  grouping_tbl_8h <- metadata_combined_8h[,c(sample_id, group_id, batches)] %>% 
+    tibble::as_tibble() %>% 
+    distinct() 
+  colnames(grouping_tbl_8h) <- c("sample","group", batches) 
+  # 30h
+  grouping_tbl_30h <- metadata_combined_30h[,c(sample_id, group_id, batches)] %>% 
+    tibble::as_tibble() %>% 
+    distinct() 
+  colnames(grouping_tbl_30h) <- c("sample","group", batches)
+} else { 
+  # 8h
+  grouping_tbl_8h <- metadata_combined_8h[,c(sample_id, group_id)] %>% 
+    tibble::as_tibble() %>% 
+    distinct() 
+  colnames(grouping_tbl_8h) = c("sample","group")
+  # 30h
+  grouping_tbl_30h <- metadata_combined_8h[,c(sample_id, group_id)] %>% 
+    tibble::as_tibble() %>% 
+    distinct() 
+  colnames(grouping_tbl_30h) = c("sample","group")}
+
+# Check output
+grouping_tbl_8h
+grouping_tbl_30h
+
+# Prioritizing of ligands
+prioritization_tables_8h <- suppressMessages(
+  generate_prioritization_tables(sender_receiver_info = abundance_expression_info_8h$sender_receiver_info, 
+                                 sender_receiver_de = sender_receiver_de_8h, 
+                                 ligand_activities_targets_DEgenes = ligand_activity_targets_DEgenes_8h, 
+                                 contrast_tbl = contrast_tbl, 
+                                 sender_receiver_tbl = sender_receiver_tbl, 
+                                 grouping_tbl = grouping_tbl_8h, 
+                                 # all prioritization criteria will be weighted equally
+                                 ## NOTE: this is different from what is performed in previous analysis
+                                 scenario = scenario,  
+                                 fraction_cutoff = fraction_cutoff, 
+                                 abundance_data_receiver = abundance_expression_info_8h$abundance_data_receiver,
+                                 abundance_data_sender = abundance_expression_info_8h$abundance_data_sender,
+                                 ligand_activity_down = ligand_activity_down))
+
+prioritization_tables_30h <- suppressMessages(
+  generate_prioritization_tables(sender_receiver_info = abundance_expression_info_30h$sender_receiver_info, 
+                                 sender_receiver_de = sender_receiver_de_30h, 
+                                 ligand_activities_targets_DEgenes = ligand_activity_targets_DEgenes_30h, 
+                                 contrast_tbl = contrast_tbl, 
+                                 sender_receiver_tbl = sender_receiver_tbl, 
+                                 grouping_tbl = grouping_tbl_30h, 
+                                 # all prioritization criteria will be weighted equally
+                                 ## NOTE: this is different from what is performed in previous analysis
+                                 scenario = scenario,  
+                                 fraction_cutoff = fraction_cutoff, 
+                                 abundance_data_receiver = abundance_expression_info_30h$abundance_data_receiver,
+                                 abundance_data_sender = abundance_expression_info_30h$abundance_data_sender,
+                                 ligand_activity_down = ligand_activity_down))
+```
+
+```{r CheckPrioritizationTable}
+# Check all available information stored in the prioritization table
+prioritization_tables_8h%>%names
+prioritization_tables_30h%>%names
+
+# Group-based summary table
+prioritization_tables_8h$group_prioritization_tbl %>%
+  head(20)
+prioritization_tables_30h$group_prioritization_tbl %>%
+  head(20)
+
+# Sample-based summary table
+prioritization_tables_8h$sample_prioritization_tbl %>% 
+  head(20)
+prioritization_tables_30h$sample_prioritization_tbl %>% 
+  head(20)
+
+# Activity of ligand combined with target gene expression
+# The expression of the target gene is based on the ligand_activity_targets_DEgenes$de_genes_df dataframe
+prioritization_tables_8h$ligand_activities_target_de_tbl %>%
+  head(20)
+prioritization_tables_30h$ligand_activities_target_de_tbl %>%
+  head(20)
+```
+
+
+# 2.7 Calculate the across-samples expression correlation between ligand-receptor pairs and target genes
+
+This is an optional step that might be performed next to the steps explained above. Although, it is recommended by Ruth to use the correlation to perfrom better prioritization of the interactions.
+
+In multi-sample datasets, the opportunity to look whether expression of ligand-receptor across all samples is correlated with the expression of their by NicheNet predicted target genes. This is performed in the following code.
+
+```{r AccrossSampleCorrelation}
+lr_target_prior_cor_8h <- lr_target_prior_cor_inference( 
+  receivers_oi = prioritization_tables_8h$group_prioritization_tbl$receiver %>% 
+    unique(), 
+  abundance_expression_info = abundance_expression_info_8h, 
+  celltype_de = celltype_de_8h, 
+  grouping_tbl = grouping_tbl_8h, 
+  prioritization_tables = prioritization_tables_8h, 
+  ligand_target_matrix = ligand_target_matrix, 
+  logFC_threshold = logFC_threshold, 
+  p_val_threshold = p_val_threshold, 
+  p_val_adj = p_val_adj )
+
+lr_target_prior_cor_30h <- lr_target_prior_cor_inference( 
+  receivers_oi = prioritization_tables_30h$group_prioritization_tbl$receiver %>% 
+    unique(), 
+  abundance_expression_info = abundance_expression_info_30h, 
+  celltype_de = celltype_de_30h, 
+  grouping_tbl = grouping_tbl_30h, 
+  prioritization_tables = prioritization_tables_30h, 
+  ligand_target_matrix = ligand_target_matrix, 
+  logFC_threshold = logFC_threshold, 
+  p_val_threshold = p_val_threshold, 
+  p_val_adj = p_val_adj )
+```
+
+# 2.8 Save all the output of MultiNicheNet for downstream use
+
+To avoid needing to reperform the analysis later, the output will be saved in an output object that contains all the necessary information to perform downstream analysis.
+
+```{r SaveOutput}
+# Merge the important variables
+multinichenet_output_8h <- list( 
+  celltype_info = abundance_expression_info_8h$celltype_info, 
+  celltype_de = celltype_de_8h, 
+  sender_receiver_info = abundance_expression_info_8h$sender_receiver_info, 
+  sender_receiver_de = sender_receiver_de_8h, 
+  ligand_activities_targets_DEgenes = ligand_activity_targets_DEgenes_8h, 
+  prioritization_tables = prioritization_tables_8h, 
+  grouping_tbl = grouping_tbl_8h, 
+  lr_target_prior_cor = lr_target_prior_cor_8h)
+
+multinichenet_output_30h <- list( 
+  celltype_info = abundance_expression_info_30h$celltype_info, 
+  celltype_de = celltype_de_30h, 
+  sender_receiver_info = abundance_expression_info_30h$sender_receiver_info, 
+  sender_receiver_de = sender_receiver_de_30h, 
+  ligand_activities_targets_DEgenes = ligand_activity_targets_DEgenes_30h, 
+  prioritization_tables = prioritization_tables_30h, 
+  grouping_tbl = grouping_tbl_30h, 
+  lr_target_prior_cor = lr_target_prior_cor_30h)
+
+# Reducing the size of the MutliNicheNet output object (for memory efficiency)
+multinichenet_output_8h <- make_lite_output(multinichenet_output = multinichenet_output_8h)
+multinichenet_output_30h <- make_lite_output(multinichenet_output = multinichenet_output_30h)
+
+saveRDS(multinichenet_output_8h, file.path(params$path_output,
+                                     paste0("MultiNicheNet_Output_8h_LowerDEScenario_", params$date, ".rds")))
+saveRDS(multinichenet_output_30h, file.path(params$path_output,
+                                     paste0("MultiNicheNet_Output_30h_LowerDEScenario_", params$date, ".rds")))
+```

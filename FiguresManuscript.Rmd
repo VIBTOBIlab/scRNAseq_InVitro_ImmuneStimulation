@@ -1,0 +1,1477 @@
+---
+title: "Figure Generation Manuscript"
+author: "Tine D'hamers"
+date: "2025-12-15"
+output: html_document
+---
+
+This script contains the code for the generation of the final figures in the manuscript. This is based on data/objects that are obtained in other scritps, and specified here in the notes.
+
+```{r LibraryLoading}
+library(patchwork)
+library(miloR, 
+        lib.loc = "/kyukon/data/gent/vo/002/gvo00224/TOBI/Projects/SingleCellPipeline/resultsCeline/seuratintegrate/Rpackages/R_4.2.1-foss-2022a")
+library(ggbeeswarm)
+library(gtools)
+library(GGally)
+```
+
+```{r PlotAesthetics}
+# Themes
+source("../PlotThemes_sc_CVID.R")
+colorsStim<-c(colorsStim, c("CD3/CD28" = colorsStim[["CD3/CD28_beads"]]))
+
+options(bitmapType='cairo')
+```
+
+```{r ParameterSettings}
+# Saving file
+FiguresOut_Path<-"/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/ManuscriptFigures"
+##### PARAMETERS ###
+FDR_thres<-0.1
+```
+
+# Figure 2: Clustering, neighbourhoods and annotation revision
+
+```{r Figure2_UMAPS_ClusterDecomposition, fig.width=7, fig.height=7}
+#### UMAP - 8H - COLOURED BASED ON CLUSTERS ####
+plt2A<-DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "B_filtered_CCAInt_clusters",
+        raster = F, label = T, label.size = 7,
+        pt.size = 0.5)+
+    themeG+
+    labs(x = "", y = "",
+         title = "")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  NoLegend()+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))+
+  # Make sure squares are obtained
+  theme(aspect.ratio=1)
+
+#### UMAP - 30H - COLOURED BASED ON CLUSTERS ####
+plt2B<-DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "B_filtered_CCAInt_clusters",
+        raster = F, label = T, label.size = 7,
+        pt.size = 0.5)+
+    themeG+
+    labs(x = "", y = "",
+         title = "")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  NoLegend()+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))+
+  # Make sure squares are obtained
+  theme(aspect.ratio=1)
+
+#### UMAP - 8H - COLOURED BASED ON STIMULATION ####
+plt2C<-DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "Stimulation",
+        raster = F, label = F,
+        pt.size = 0.5)+
+    themeG+
+    labs(x = "", y = "",
+         title = "")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  scale_color_manual(values = colorsStim)+
+  NoLegend()+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))+
+  # Make sure squares are obtained
+  theme(aspect.ratio=1)
+
+#### UMAP - 30H - COLOURED BASED ON CLUSTERS ####
+plt2D<-DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "Stimulation",
+        raster = F, label = F,
+        pt.size = 0.5)+
+    themeG+
+    labs(x = "", y = "",
+         title = "")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  scale_color_manual(values = colorsStim)+
+  NoLegend()+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))+
+  # Make sure squares are obtained
+  theme(aspect.ratio=1)
+
+
+(plt2A + plt2C) / (plt2B + plt2D)
+
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_UMAP_Clusters_Stimulations.pdf"),
+       device = "pdf", dpi = 330,
+       width = 10, height = 10)
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_UMAP_Clusters_Stimulations.png"),
+       device = "png", dpi = 330,
+       width = 10, height = 10)
+```
+
+```{r Figure2_Barplots_Clusters, fig.height=7, fig.width=7}
+#### BARPLOT - 8H - PER CLUSTER ####
+# Extract data for barplots
+plt2E.data <- table(IntData.B_8h.FilClus$B_filtered_CCAInt_clusters, 
+                    IntData.B_8h.FilClus$Stimulation)%>%
+  as.data.frame()
+names(plt2E.data) <- c("Cluster", "Stimulation", "Cells")
+
+# Calculate total number of cells per cluster 
+# Calculate the fraction per cluster with regard to the stimulation
+plt2E.data<-plt2E.data%>%
+  group_by(Cluster)%>%
+  mutate(TotalCells = sum(Cells),
+         Fraction = Cells/TotalCells*100,
+         Cluster = factor(Cluster,
+                          levels = levels(Cluster)%>%as.numeric()%>%sort(decreasing = T),
+                          ordered = T),
+         Stimulation = factor(Stimulation,
+                              levels = c("ODN2006", "IFNgamma", "MegaCD40L", "CD3/CD28_beads", "Unstimulated"),
+                              ordered = T))
+# Plot the data using a barplot
+plt2E<-ggplot(plt2E.data)+
+  geom_col(mapping = aes(x = Fraction, y = Cluster,
+                     fill = Stimulation))+
+  # Add the total number of cells on the end of the bar
+  geom_text(data = plt2E.data%>%
+              group_by(Cluster)%>%
+              # Only one number present for total cells for each of the clusters separately
+              summarise(TotalCells = max(TotalCells)),
+            angle = 0,
+            x = 102, vjust = 0.5, hjust = 0,
+            size = 4,
+            aes(y = Cluster, label = TotalCells))+
+  scale_fill_manual(values = colorsStim)+
+  themeG+
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 15),
+        panel.grid.major.x = element_line(colour = "lightgrey", 
+                                          size = 0.5),
+        axis.line = element_blank(),
+        axis.ticks.y = element_blank())+
+  xlim(0,110)+
+  scale_x_continuous(breaks=seq(0, 110, 20),
+                     limits = c(0,120),
+                     expand = c(0,0))+
+  labs(x="")
+
+#### BARPLOT - 30H - PER CLUSTER ####
+# Extract data for barplots
+plt2F.data <- table(IntData.B_30h.FilClus$B_filtered_CCAInt_clusters, 
+                    IntData.B_30h.FilClus$Stimulation)%>%
+  as.data.frame()
+names(plt2F.data) <- c("Cluster", "Stimulation", "Cells")
+
+# Calculate total number of cells per cluster 
+# Calculate the fraction per cluster with regard to the stimulation
+plt2F.data<-plt2F.data%>%
+  group_by(Cluster)%>%
+  mutate(TotalCells = sum(Cells),
+         Fraction = Cells/TotalCells*100,
+         Cluster = factor(Cluster,
+                          levels = levels(Cluster)%>%as.numeric()%>%sort(decreasing = T),
+                          ordered = T),
+         Stimulation = factor(Stimulation,
+                              levels = c("ODN2006", "IFNgamma", "MegaCD40L", "CD3/CD28_beads", "Unstimulated"),
+                              ordered = T))
+# Plot the data using a barplot
+plt2F<-ggplot(plt2F.data)+
+  geom_col(mapping = aes(x = Fraction, y = Cluster,
+                     fill = Stimulation))+
+  # Add the total number of cells on the end of the bar
+  geom_text(data = plt2F.data%>%
+              group_by(Cluster)%>%
+              # Only one number present for total cells for each of the clusters separately
+              summarise(TotalCells = max(TotalCells)),
+            angle = 0,
+            x = 102, vjust = 0.5, hjust = 0,
+            size = 4,
+            aes(y = Cluster, label = TotalCells))+
+  scale_fill_manual(values = colorsStim)+
+  themeG+
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 15),
+        panel.grid.major.x = element_line(colour = "lightgrey", 
+                                          size = 0.5),
+        axis.line = element_blank(),
+        axis.ticks.y = element_blank())+
+  xlim(0,110)+
+  scale_x_continuous(breaks=seq(0, 110, 20),
+                     limits = c(0,120),
+                     expand = c(0,0))
+
+plt2E / plt2F & NoLegend()
+
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_Barplots_Clusters_Stimulations.pdf"),
+       device = "pdf", dpi = 330,
+       width = 5, height = 10)
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_Barplots_Clusters_Stimulations.png"),
+       device = "png", dpi = 330,
+       width = 5, height = 10)
+
+as_ggplot(get_legend(p = plt2E))
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_Legend_Stimulations.pdf"),
+       device = "pdf", dpi = 330,
+       width = 3, height=3)
+```
+
+The MiloR object necessary to visualize the plots below are generated in the `013_MiloR_DA_FilteredBCells.Rmd` script.
+
+```{r Figure2_MiloAbundancyPlots_8h_Supplementary, fig.height=3, fig.width=10}
+pIFN_8h<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "IFNgamma"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = paste0("IFN","\U03B3","/R-848"))+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+  
+
+pCD40L_8h<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "MegaCD40L"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "MegaCD40L")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+
+pCD3CD28_8h<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "antiCD3CD28"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "Anti-CD3/CD28")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+
+pODN_8h<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "ODN2006"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "ODN2006")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+
+(pODN_8h + pIFN_8h + pCD40L_8h + pCD3CD28_8h) + plot_layout(ncol = 4) &
+  NoLegend() &
+  theme(plot.subtitle = element_text(hjust = 0.5, size = 11)) 
+
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_MiloR_UMAPs.png"),
+       device = "png", dpi = 330,
+       width = 8, height=3)
+
+# Extract and save the legend
+as_ggplot(get_legend(p = pIFN_8h))
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_Legend_MiloR.pdf"),
+       device = "pdf", dpi = 330,
+       width = 2, height=5)
+```
+
+
+```{r Figure2_SelectionOfNhoods_8h}
+shapeValues = c("TRUE" = 19, "FALSE" = 1)
+sizeValues = c("TRUE" = 1, "FALSE" = 0.5)
+
+# Read in the necessary data
+plotBee_ClusAnnot.data<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                                  sheet = "OverviewData")
+# Factorize the clusters
+plotBee_ClusAnnot.data<-plotBee_ClusAnnot.data%>%
+  filter(B_filtered_CCAInt_clusters != "Mixed")%>%
+  mutate(B_filtered_CCAInt_clusters = factor(B_filtered_CCAInt_clusters,
+                                             levels = unique(B_filtered_CCAInt_clusters)%>%mixedsort(decreasing = T),
+                                             ordered = T))
+# Plot Beeswarm plots in which specific neighbourhoods are selected
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "ODN2006"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "ODN2006", y = "", x = "Original clusters")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "IFNgamma"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = bquote("IFN-"*gamma*"/R-848"),
+       x = "", y = "")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "MegaCD40L"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "MegaCD40L", x =  "Original clusters", y = "LogFC")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "antiCD3CD28"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "Anti-CD3/CD28", y = "LogFC", x = "")  & ylim(-10,10)&
+  themeG &
+  theme(panel.grid.major = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                          linewidth = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        plot.subtitle = element_text(hjust = 0.5, size = 11,
+                                     color = "black"),
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12)) &  
+  NoLegend()
+
+ggsave(filename = file.path(FiguresOut_Path, "Fig2_SelectedNhoods_8h.png"),
+       device = "png", dpi = 330,
+       width = 10, height=10)
+```
+
+```{r Figure2_RevisedAnnotation_Barplot, fig.width = 3, fig.height=7}
+#### STACKED BAR PLOT - EXCLUDING HC ####
+plt2I<-ggplot(data = UpdAnnot_Cells_Stim_Unstim.Fractions%>%
+         filter(Frac_MetaD != 0)%>%
+         group_by(NBH_Annot, MetaD_Annot, TimePoint)%>%
+         summarise(TotalCells_NBH = sum(TotalCells_NBH),
+                   TotalCells_MetaD = sum(TotalCells_MetaD))%>%
+         mutate(Frac_MetaD = TotalCells_NBH/TotalCells_MetaD*100)%>%
+         mutate(NBH_Annot = factor(NBH_Annot,
+                                   levels = c("Undefined", "Unstimulated", "ODN2006", "IFNgamma", "MegaCD40L", "antiCD3CD28"),
+                                   labels = c("Undefined","Unstimulated","Stimulated", "Stimulated", "Stimulated", "Stimulated" ),
+                                   ordered = T),
+                TimePoint = factor(TimePoint,
+                                   levels = c("30h", "8h"),
+                                   ordered = T)),
+       mapping = aes(x = Frac_MetaD, 
+                     y = TimePoint,
+                     fill = NBH_Annot))+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey95",
+                                        size = 0.5,
+                                        linetype = "solid"),
+        axis.line.x = element_blank(),
+        axis.ticks =  element_blank())+
+  facet_grid(MetaD_Annot~.,
+             switch = "y")+
+  geom_col(width = 0.6)+
+  theme(panel.grid.major.x = element_line(color = "grey95",
+                                        size = 0.5,
+                                        linetype = "solid"),
+        panel.grid.major.y = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(hjust = 0.5),
+        legend.title.position = "top",
+        axis.line = element_blank(), 
+        strip.text= element_text(size = 11),
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12))+
+  labs(y = "Incubation Time",
+       x = "Fraction",
+       fill = "Revised annotation")+
+  scale_fill_manual(values = c("Stimulated" = "#49449E",
+                               "Unstimulated" = "#8A2F2C",
+                               "Undefined" = "grey80"))+
+  scale_x_continuous(limits=c(-10,110), breaks=seq(0,100, by = 20),
+                     expand = c(0,0))+
+  scale_y_discrete(position = "right")+
+  guides(fill=guide_legend(ncol=2))
+
+plt2I
+
+ggsave(plot = plt2I,
+       filename = file.path(FiguresOut_Path, "Fig2_RevisedAnnotation.pdf"),
+       device = "pdf", dpi = 330,
+       width = 5, height=8)
+```
+
+# Figure 3: Differential gene expression
+
+For this figure, all datasets are obtained in the `014_DEGenes_SelectedNhoods.Rmd` script.
+
+```{r Figure3_UpsetPlots_8h, fig.width=5, fig.height=10}
+#### FIGURE 3A ####
+### PLOTTING THE DATA USING UPSET PLOT OF COMPLEX HEATMAP ###
+# Generate upset plot
+upPlot_8h.Fixed.Meta_Rotate<-UpSet(
+   t(UpsetData_SIGN_8h.Fixed.Meta),
+   comb_order = order(comb_size(UpsetData_SIGN_8h.Fixed.Meta), decreasing=T),
+   # Colors of the dots and bars below
+   comb_col = "#595B5C", bg_pt_col = 'white',
+   # Add plot title
+   column_title = "8h of stimulation",
+   column_names_rot = 45,
+   # Lay out of the text
+   column_title_gp = gpar(fontsize = 15),
+   column_names_gp = gpar(fontsize = 12),
+   # Update row annotation (entire set of DEgenes)
+   top_annotation = HeatmapAnnotation(
+              "DE genes" = anno_barplot(set_size(UpsetData_SIGN_8h.Fixed.Meta),
+                                        border = FALSE,
+                                        gp = gpar(fill = "#595B5C",
+                                                  lty = "blank"), 
+                                        add_numbers = T,
+                                        numbers_gp = gpar(fontsize = 10),
+                                        height = unit(4, "cm"),
+                                        width = unit(4, "cm"),
+                                        axis_param = list(gp = gpar(fontsize = 10))),
+              annotation_name_rot = 90,
+              annotation_name_side = "left",
+              annotation_name_gp = gpar(fontsize = 12)),
+   # Update column annotation on top of the Upset plot
+   right_annotation = rowAnnotation(
+      # Add barplot based on the direction of the DE genes
+      "Intersection size" = anno_barplot(UpsetData_COMB_8h.Fixed.Meta.table,
+                                         border = FALSE,
+                                         # Store correct colors
+                                         gp = gpar(fill = colDirection[colnames(
+                                           UpsetData_COMB_8h.Fixed.Meta.table)],
+                                                   lty = "blank"),
+                                         add_numbers = T,
+                                         width = unit(5, "cm"),
+                                         height = unit(5,"cm"),
+                                         axis_param = list(gp = gpar(fontsize = 10))),
+      # Names to the left
+      annotation_name_side = "bottom",
+      # Rotation of the annotation at the left side
+      annotation_name_rot = 0,
+      annotation_name_gp = gpar(fontsize = 12))
+   )
+
+# Generate legend
+lgd = Legend(
+  labels    = colnames(UpsetData_COMB_8h.Fixed.Meta.table),
+  legend_gp = gpar(fill = colDirection[colnames(UpsetData_COMB_8h.Fixed.Meta.table)]),
+  title     = "Direction"
+)
+
+# Plot the final upsetplot
+pdf(file.path(FiguresOut_Path, "Fig3_UpsetDEGenes_8h.pdf"), 
+    width=5, height=6.5)
+draw(upPlot_8h.Fixed.Meta_Rotate,
+     annotation_legend_list = list(lgd),
+     annotation_legend_side = "left")
+dev.off()
+```
+
+```{r Figure3_UpsetPlots_30h, fig.width=5, fig.height=10}
+#### FIGURE 3B ####
+### PLOTTING THE DATA USING UPSET PLOT OF COMPLEX HEATMAP ###
+# Generate upset plot
+upPlot_30h.Fixed.Meta_Rotate<-UpSet(
+   t(UpsetData_SIGN_30h.Fixed.Meta),
+   comb_order = order(comb_size(UpsetData_SIGN_30h.Fixed.Meta), decreasing=T),
+   # Colors of the dots and bars below
+   comb_col = "#595B5C", bg_pt_col = 'white',
+   # Add plot title
+   column_title = "30h of stimulation",
+   column_names_rot = 45,
+   # Lay out of the text
+   column_title_gp = gpar(fontsize = 15),
+   column_names_gp = gpar(fontsize = 12),
+   # Update row annotation (entire set of DEgenes)
+   top_annotation = HeatmapAnnotation(
+              "DE genes" = anno_barplot(set_size(UpsetData_SIGN_30h.Fixed.Meta),
+                                        border = FALSE,
+                                        gp = gpar(fill = "#595B5C",
+                                                  lty = "blank"), 
+                                        add_numbers = T,
+                                        numbers_gp = gpar(fontsize = 10),
+                                        height = unit(4, "cm"),
+                                        width = unit(4, "cm"),
+                                        axis_param = list(gp = gpar(fontsize = 10))),
+              annotation_name_rot = 90,
+              annotation_name_side = "left",
+              annotation_name_gp = gpar(fontsize = 12)),
+   # Update column annotation on top of the Upset plot
+   right_annotation = rowAnnotation(
+      # Add barplot based on the direction of the DE genes
+      "Intersection size" = anno_barplot(UpsetData_COMB_30h.Fixed.Meta.table,
+                                         border = FALSE,
+                                         # Store correct colors
+                                         gp = gpar(fill = colDirection[colnames(
+                                           UpsetData_COMB_30h.Fixed.Meta.table)],
+                                                   lty = "blank"),
+                                         add_numbers = T,
+                                         width = unit(5, "cm"),
+                                         height = unit(5,"cm"),
+                                         axis_param = list(gp = gpar(fontsize = 10))),
+      # Names to the left
+      annotation_name_side = "bottom",
+      # Rotation of the annotation at the left side
+      annotation_name_rot = 0,
+      annotation_name_gp = gpar(fontsize = 12))
+   )
+
+# Generate legend
+lgd = Legend(
+  labels    = colnames(UpsetData_COMB_30h.Fixed.Meta.table),
+  legend_gp = gpar(fill = colDirection[colnames(UpsetData_COMB_30h.Fixed.Meta.table)]),
+  title     = "Direction"
+)
+
+# Plot the final upsetplot
+pdf(file.path(FiguresOut_Path, "Fig3_UpsetDEGenes_30h.pdf"), 
+    width=5, height=6.5)
+draw(upPlot_30h.Fixed.Meta_Rotate,
+     annotation_legend_list = list(lgd),
+     annotation_legend_side = "left")
+dev.off()
+```
+
+```{r CorrelationGeneExpression_SelectedGenes, fig.width=9, fig.height=8}
+#### FIGURE 3C ####
+CorHeatmap <- Heatmap(DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.CorMat.SelGenes,
+        name = "Pearson correlation",
+        rect_gp = gpar(type = "none"), 
+        cluster_rows = FALSE, cluster_columns = FALSE,
+        show_row_names = F, show_column_names = F,
+        col = colorRamp2(c(0, 0.5, 1), c("white", "#93B5C6", "#044C99")),
+        cell_fun = function(j, i, x, y, w, h, fill) {
+          if(i<j) {
+            grid.rect(x, y, w, h, gp = gpar(fill = fill, col = "white"))
+            grid.text(sprintf("%.2f", DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.CorMat.SelGenes[i, j]), 
+                      x, y, gp = gpar(fontsize = 15, col = "white"))
+            }
+          },
+        right_annotation = rowAnnotation(set=anno_text(colnames(DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.CorMat.SelGenes),
+                                                       gp = gpar(fontsize = 15))),
+        top_annotation = HeatmapAnnotation(set=anno_text(colnames(DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.CorMat.SelGenes),
+                                                         location = 0, just="left", rot = 45,
+                                                         gp = gpar(fontsize = 15))))
+
+CorHeatmap
+
+OverlapHeatmap <- Heatmap(MatOverlap,
+        name = "Absolute overlap",
+        rect_gp = gpar(type = "none"), 
+        row_order = names(DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta),
+        column_order = names(DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta),
+        col = colorRamp2(c(0, 300, 1100), c("white", "#AD7E55", "#6C3505")),
+        row_names_side = "left", column_names_side = "top",
+        cell_fun = function(j, i, x, y, w, h, fill) {
+          if(i>=j){
+            grid.rect(x, y, w, h, gp = gpar(fill = fill, col = "white"))
+            grid.text(round(MatOverlap[i,j], digits = 1), x, y,
+                      gp = gpar(fontsize = 15, col = "black"))
+            }
+          },
+        show_row_names = F, show_column_names = F)
+
+OverlapHeatmap
+
+pdf(file.path(FiguresOut_Path, "Fig3_CorHeatmap_OverlapGenes.pdf"), 
+    width=9, height=8)
+draw(OverlapHeatmap + CorHeatmap, ht_gap = unit(-147, "mm"))
+dev.off()
+```
+
+```{r Figure3_SelectionTopGenes_UpregulatedGenesOnly, fig.width=4, fig.height=7}
+# PlotData
+#### ROTATED FIGURE ####
+# ggplot(topGenes_8h_30h.Data.Fixed.Meta_UP,
+#        mapping = aes(x = reorder(Gene, desc(Gene)),
+#                      y = reorder(Stimulation, desc(Stimulation))))+
+#   facet_grid(TimePoint~.)+
+#   geom_vline(mapping = aes(xintercept = Gene),
+#              color = "grey80", 
+#              alpha = 0.5)+
+#   geom_hline(mapping = aes(yintercept = Stimulation),
+#              color = "grey80",
+#              alpha = 0.5)+
+#   geom_point(mapping = aes(size = Score,
+#                            fill = avg_log2FC),
+#              colour = "grey50",
+#              shape = 21)+
+#   geom_point(data = topGenes_8h_30h.Data.Fixed.Meta_UP%>%
+#                filter(InTop),
+#              shape = 20, color = "black",
+#              size = 0.1)+
+#   scale_fill_gradient2(low = colDirection["DOWN"], 
+#                         mid = "white", 
+#                         high = colDirection["UP"],
+#                         midpoint = 0)+
+#   scale_size(range = c(1,6))+
+#   themeG+
+#   # scale_y_discrete(position = "bottom")+
+#   theme(axis.text.x = element_text(angle = 45,
+#                                    vjust = 1, hjust = 1,
+#                                    size=10), 
+#         axis.text.y = element_text(size = 10),
+#         axis.line = element_blank(),
+#         axis.ticks = element_blank(),
+#         axis.title = element_blank())
+
+ggplot(topGenes_8h_30h.Data.Fixed.Meta_UP,
+       mapping = aes(y = Gene,
+                     x = Stimulation))+
+  facet_grid(.~TimePoint)+
+  geom_hline(mapping = aes(yintercept = Gene),
+             color = "grey80",
+             alpha = 0.5)+
+  geom_vline(mapping = aes(xintercept = Stimulation),
+             color = "grey80",
+             alpha = 0.5)+
+  geom_point(mapping = aes(size = Score,
+                           fill = avg_log2FC),
+             colour = "grey50",
+             shape = 21)+
+  geom_point(data = topGenes_8h_30h.Data.Fixed.Meta_UP%>%
+               filter(InTop),
+             shape = 20, color = "black",
+             size = 0.1)+
+  scale_fill_gradient2(low = colDirection["DOWN"],
+                        mid = "white",
+                        high = colDirection["UP"],
+                        midpoint = 0)+
+  scale_size(range = c(1,6))+
+  themeG+
+  scale_x_discrete(position = "bottom")+
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1, hjust = 1,
+                                   size=10),
+        axis.text.y = element_text(size = 10),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank())
+
+ggsave(filename = file.path(FiguresOut_Path, "Fig3_ExpressionLevels_Top5_PerTimeStim.pdf"),
+       device = "pdf", dpi = 330,
+       width = 5, height=6)
+```
+
+```{r Figure3_UpsetPlotGeneSets, fig.width=10, fig.height=4}
+#### FIGURE 3D ####
+# Only visualize the combinations with at least 5 gene sets in common
+UpsetData_SIGN_GSE.Fixed.SelFig<-UpsetData_SIGN_GSE.Fixed[comb_size(UpsetData_SIGN_GSE.Fixed) >= 5]
+
+# Extract the timepoint
+colUpset.Time<-set_name(UpsetData_SIGN_GSE.Fixed.SelFig)%>%
+  grepl(pattern = "30")
+colUpset.Time[colUpset.Time]<-"30"
+colUpset.Time[colUpset.Time == "FALSE"]<-"8"
+# Extract the expression direction
+colUpset.Exp<-set_name(UpsetData_SIGN_GSE.Fixed.SelFig)%>%
+  grepl(pattern = "UP")
+colUpset.Exp[colUpset.Exp]<-"UP"
+colUpset.Exp[colUpset.Exp == "FALSE"]<-"DOWN"
+
+#### ROTATED FIGURE ####
+# UpSet(t(UpsetData_SIGN_GSE.Fixed.SelFig), 
+#       comb_order = order(comb_size(UpsetData_SIGN_GSE.Fixed.SelFig), decreasing = T),
+#       # Lay out of the text
+#       column_names_gp = gpar(fontsize = 10),
+#       comb_col = "#595B5C", bg_pt_col = "white",
+#       top_annotation = HeatmapAnnotation(
+#                 "GSE" = anno_barplot(set_size(UpsetData_SIGN_GSE.Fixed.SelFig),
+#                                           border = FALSE,
+#                                           gp = gpar(fill = "#595B5C",
+#                                                     lty = "blank"), 
+#                                           add_numbers = T,
+#                                           width = unit(1, "cm"),
+#                                           height = unit(3, "cm")),
+#                 TimePoint=colUpset.Time,
+#                 Direction=colUpset.Exp,
+#                 col = list("TimePoint"=colorsTime,
+#                            "Direction"=colDirection)),
+#       right_annotation = rowAnnotation(
+#                 "Intersection size" = anno_barplot(comb_size(UpsetData_SIGN_GSE.Fixed.SelFig),
+#                                                    border = FALSE,
+#                                                    gp = gpar(fill = "#595B5C",
+#                                                              lty = "blank"), 
+#                                                    add_numbers = T,
+#                                                    height = unit(1, "cm"),
+#                                                    width = unit(2, "cm")),
+#                 annotation_name_side = "bottom",
+#                 annotation_name_rot = 90))
+
+pdf(file.path(FiguresOut_Path, "Fig3_UpsetGSEA.pdf"), 
+    width=10, height=4)
+# Visualize the upsetplot
+UpSet(UpsetData_SIGN_GSE.Fixed.SelFig, 
+      comb_order = order(comb_size(UpsetData_SIGN_GSE.Fixed.SelFig), decreasing = T),
+      # Lay out of the text
+      column_names_gp = gpar(fontsize = 10),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      right_annotation = rowAnnotation(
+                "GSE" = anno_barplot(set_size(UpsetData_SIGN_GSE.Fixed.SelFig),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(3, "cm"),
+                                          height = unit(1, "cm")),
+                TimePoint=colUpset.Time,
+                Direction=colUpset.Exp,
+                col = list("TimePoint"=colorsTime,
+                           "Direction"=colDirection)),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_SIGN_GSE.Fixed.SelFig),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"), 
+                                                   add_numbers = T,
+                                                   height = unit(3, "cm"),
+                                                   width = unit(1, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 0))
+dev.off()
+```
+# Supplementary figures
+
+## Correlation in cluster fractions per stimulation
+
+```{r SuplFigure_Barplots_ClustersPerStimulation, fig.height=7, fig.width=7}
+#### BARPLOT - 8H - PER CLUSTER ####
+# Extract data for barplots
+plt2E.data.Rev <- table(IntData.B_8h.FilClus$Stimulation,
+                        IntData.B_8h.FilClus$B_filtered_CCAInt_clusters)%>%
+  as.data.frame()
+names(plt2E.data.Rev) <- c("Stimulation", "Cluster", "Cells")
+
+# Calculate total number of cells per cluster 
+# Calculate the fraction per cluster with regard to the stimulation
+plt2E.data.Rev<-plt2E.data.Rev%>%
+  group_by(Stimulation)%>%
+  mutate(TotalCells = sum(Cells),
+         Fraction = Cells/TotalCells*100,
+         Cluster = factor(Cluster,
+                          levels = levels(Cluster)%>%as.numeric()%>%sort(decreasing = T),
+                          ordered = T),
+         Stimulation = factor(Stimulation,
+                              levels = c("ODN2006", "IFNgamma", "MegaCD40L", "CD3/CD28_beads", "Unstimulated"),
+                              ordered = T))
+# Plot the data using a barplot
+plt2E.Rev<-ggplot(plt2E.data.Rev)+
+  geom_col(mapping = aes(x = Fraction, y = Stimulation),
+           fill = "white", color = "black")+
+  # Add the total number of cells on the end of the bar
+  geom_text(data = plt2E.data.Rev%>%
+              group_by(Stimulation)%>%
+              # Only one number present for total cells for each of the clusters separately
+              summarise(TotalCells = max(TotalCells)),
+            angle = 0,
+            x = 102, vjust = 0.5, hjust = 0,
+            size = 4,
+            aes(y = Stimulation, label = TotalCells))+
+  themeG+
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 15),
+        panel.grid.major.x = element_line(colour = "lightgrey", 
+                                          size = 0.5),
+        axis.line = element_blank(),
+        axis.ticks.y = element_blank())+
+  xlim(0,110)+
+  scale_x_continuous(breaks=seq(0, 110, 20),
+                     limits = c(0,120),
+                     expand = c(0,0))+
+  labs(x="", subtitle="8h")
+
+#### BARPLOT - 30H - PER CLUSTER ####
+# Extract data for barplots
+plt2F.data.Rev <- table(IntData.B_30h.FilClus$Stimulation,
+                        IntData.B_30h.FilClus$B_filtered_CCAInt_clusters)%>%
+  as.data.frame()
+names(plt2F.data.Rev) <- c("Stimulation", "Cluster", "Cells")
+
+# Calculate total number of cells per cluster 
+# Calculate the fraction per cluster with regard to the stimulation
+plt2F.data.Rev<-plt2F.data.Rev%>%
+  group_by(Stimulation)%>%
+  mutate(TotalCells = sum(Cells),
+         Fraction = Cells/TotalCells*100,
+         Cluster = factor(Cluster,
+                          levels = levels(Cluster)%>%as.numeric()%>%sort(decreasing = T),
+                          ordered = T),
+         Stimulation = factor(Stimulation,
+                              levels = c("ODN2006", "IFNgamma", "MegaCD40L", "CD3/CD28_beads", "Unstimulated"),
+                              ordered = T))
+# Plot the data using a barplot
+plt2F.Rev<-ggplot(plt2F.data.Rev)+
+  geom_col(mapping = aes(x = Fraction, y = Stimulation),
+           fill = "white", color = "black")+
+  # Add the total number of cells on the end of the bar
+  geom_text(data = plt2F.data.Rev%>%
+              group_by(Stimulation)%>%
+              # Only one number present for total cells for each of the clusters separately
+              summarise(TotalCells = max(TotalCells)),
+            angle = 0,
+            x = 102, vjust = 0.5, hjust = 0,
+            size = 4,
+            aes(y = Stimulation, label = TotalCells))+
+  themeG+
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 15),
+        panel.grid.major.x = element_line(colour = "lightgrey", 
+                                          size = 0.5),
+        axis.line = element_blank(),
+        axis.ticks.y = element_blank())+
+  xlim(0,110)+
+  scale_x_continuous(breaks=seq(0, 110, 20),
+                     limits = c(0,120),
+                     expand = c(0,0))+
+  labs(x="", subtitle = "30h")
+
+plt2E.Rev / plt2F.Rev & NoLegend()
+
+
+```
+
+```{r CorrelationPlot_Fractions_ClustersPerStimulation, fig.height=10, fig.width=10}
+#### SCATTER PLOT + LABELING ####
+plot_lower_corrPlot.ggpairs<-function(data, mapping){
+  
+  # Extract the names of the columns present on the x and y axis
+  x_name<-as_label(mapping$x)
+  y_name<-as_label(mapping$y)
+  
+  # Plotting the data using a scatter plot
+  ggplot(data, mapping = aes(x = .data[[x_name]],
+                            y = .data[[y_name]]))+
+    geom_abline(slope = 1, intercept = 0,
+              color = "grey50")+
+    geom_point(size = 1)+
+    theme_minimal()+
+    scale_y_continuous(limits=c(0,50), breaks=seq(0, 50, by = 5))+
+    scale_x_continuous(limits=c(0,50), breaks=seq(0, 50, by = 5))+
+    theme(axis.text.x = element_text(angle=45))
+}
+
+#### SCATTERPLOT ####
+plot_diag_corrPlot.ggpairs<-function(data, mapping){
+  # Extract the names of the columns present on the x and y axis
+  x_name<-as_label(mapping$x)
+  
+  # Plotting the data
+  ggplot(data = data, 
+         mapping = aes(y = .data[[x_name]], 
+                       x = Cluster))+
+    geom_col(width = 0.5)+
+    theme_minimal()+
+    theme(axis.text.x = element_text(angle=45))
+}
+
+#### CORRELATION CALCULATION ####
+plot_upper_corrPlot.ggpairs <- function(data, mapping){
+  
+  # Extract the names of the columns present on the x and y axis
+  x_name<-as_label(mapping$x)
+  y_name<-as_label(mapping$y)
+
+  
+  # Store correlation
+  tmp_cor<-cor(x = data[[x_name]], y = data[[y_name]],
+             method = "spearman")
+  
+  # Plot the output
+  ggplot() + 
+    annotate(geom = "text",
+             x = 0.5, y = 0.5,
+             label = sprintf("Corr: \n %.3f", tmp_cor),
+             size = 6)+
+    theme_void()
+  }
+
+# Prepare plotting data
+plt2E.data.Rev.Corr<-plt2E.data.Rev%>%
+  select(Stimulation, Fraction, Cluster)%>%
+  pivot_wider(names_from = "Stimulation",
+              values_from = "Fraction")%>%
+  mutate(Cluster = factor(Cluster,
+                          levels = mixedsort(unique(Cluster), decreasing = TRUE),
+                          ordered = TRUE))%>%
+  select(Cluster, ODN2006, IFNgamma, MegaCD40L, `CD3/CD28_beads`, Unstimulated)
+
+plt2F.data.Rev.Corr<-plt2F.data.Rev%>%
+  select(Stimulation, Fraction, Cluster)%>%
+  pivot_wider(names_from = "Stimulation",
+              values_from = "Fraction")%>%
+  mutate(Cluster = factor(Cluster,
+                          levels = mixedsort(unique(Cluster), decreasing = TRUE),
+                          ordered = TRUE))%>%
+  select(Cluster, ODN2006, IFNgamma, MegaCD40L, `CD3/CD28_beads`, Unstimulated)
+  
+
+ggpairs(plt2E.data.Rev.Corr,
+        columns = 2:6,
+        lower = list(continuous = GGally::wrap(plot_lower_corrPlot.ggpairs)),
+        diag = list(continuous = GGally::wrap(plot_diag_corrPlot.ggpairs)),
+        upper = list(continuous = GGally::wrap(plot_upper_corrPlot.ggpairs)),
+        title = "8h")+
+  theme(axis.text = element_text(size = 10),
+        axis.text.x = element_text(angle = 270, vjust = 0.5, hjust = 0),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 17))
+
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_ClusterFractions_8h_CorrelationPlot.pdf"),
+       device = "pdf", dpi = 330,
+       width = 10, height=10, bg = "white")
+
+ggpairs(plt2F.data.Rev.Corr,
+        columns = 2:6,
+        lower = list(continuous = GGally::wrap(plot_lower_corrPlot.ggpairs)),
+        diag = list(continuous = GGally::wrap(plot_diag_corrPlot.ggpairs)),
+        upper = list(continuous = GGally::wrap(plot_upper_corrPlot.ggpairs)),
+        title = "30h")+
+  theme(axis.text = element_text(size = 10),
+        axis.text.x = element_text(angle = 270, vjust = 0.5, hjust = 0),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 17))
+
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_ClusterFractions_30h_CorrelationPlot.pdf"),
+       device = "pdf", dpi = 330,
+       width = 10, height=10, bg = "white")
+```
+## Milo abundancy - selection Nhoods - 30h
+
+```{r Figure2_MiloAbundancyPlots_30h_Supplementary, fig.height=7, fig.width=7}
+pIFN_30h<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "IFNgamma"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = paste0("IFN","\U03B3","/R-848"))+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+  
+
+pCD40L_30h<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "MegaCD40L"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "MegaCD40L")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+
+pCD3CD28_30h<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "antiCD3CD28"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "Anti-CD3/CD28")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+
+pODN_30h<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "ODN2006"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "ODN2006")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))+
+  coord_fixed()+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        aspect.ratio = 1)
+
+(pODN_30h + pIFN_30h + pCD40L_30h + pCD3CD28_30h) + plot_layout(ncol = 4) &
+  NoLegend() &
+  theme(plot.subtitle = element_text(hjust = 0.5, size = 11)) 
+
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_MiloR_UMAPs_30h.png"),
+       device = "png", dpi = 330,
+       width = 8, height=3)
+
+# Extract and save the legend
+as_ggplot(get_legend(p = pIFN_30h))
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_Legend_MiloR_30h.pdf"),
+       device = "pdf", dpi = 330,
+       width = 2, height=5)
+```
+
+Included the mixed NBHs as well to show how this looks like. These are excluded in the figure of 8h of stimulation.
+
+```{r Figure2_SelectionOfNhoods_30h_Supplementary}
+# Read in the necessary data
+plotBee_ClusAnnot.data.30h<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                       "MiloR",
+                                                       paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                                  sheet = "OverviewData")
+# Factorize the clusters
+plotBee_ClusAnnot.data.30h<-plotBee_ClusAnnot.data.30h%>%
+  mutate(B_filtered_CCAInt_clusters = factor(B_filtered_CCAInt_clusters,
+                                             levels = unique(B_filtered_CCAInt_clusters)%>%mixedsort(decreasing = T),
+                                             ordered = T))
+# Plot Beeswarm plots in which specific neighbourhoods are selected
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data.30h%>%filter(Stimulation == "ODN2006"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "ODN2006", y = "", x = "Original clusters")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data.30h%>%filter(Stimulation == "IFNgamma"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = bquote("IFN-"*gamma*"/R-848"),
+       x = "", y = "")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data.30h%>%filter(Stimulation == "MegaCD40L"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "MegaCD40L", x =  "Original clusters", y = "LogFC")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data.30h%>%filter(Stimulation == "antiCD3CD28"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "Anti-CD3/CD28", y = "LogFC", x = "")  & ylim(-10,10)&
+  themeG &
+  theme(panel.grid.major = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                          linewidth = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        plot.subtitle = element_text(hjust = 0.5, size = 11,
+                                     color = "black"),
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12)) &  
+  NoLegend()
+
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_SelectedNhoods_30h.png"),
+       device = "png", dpi = 330,
+       width = 10, height=10)
+```
+
+## Revised annotation - HC information included
+
+```{r Figure2_Scatterplot_RevisedAnnotation_HCInformation}
+#### SCATTER PLOT ####
+ggplot(data = UpdAnnot_Cells_Stim_Unstim.Fractions%>%
+         filter(Frac_MetaD != 0)%>%
+         mutate(NBH_Annot = factor(NBH_Annot,
+                                   levels = c("ODN2006", "IFNgamma", "MegaCD40L", "antiCD3CD28", "Unstimulated", "Undefined"),
+                                   labels = c("Stimulated", "Stimulated", "Stimulated", "Stimulated", "Unstimulated", "Undefined"))),
+       mapping = aes(y = Frac_MetaD, 
+                     x = TimePoint,
+                     color = HC))+
+  scale_y_continuous(limits=c(-10,110), breaks=seq(0,100, by = 20))+
+  theme(panel.grid.major = element_line(color = "grey95",
+                                        size = 0.5,
+                                        linetype = "solid"),
+        axis.line.x = element_blank())+
+  stat_summary(mapping = aes(group = TimePoint),
+               fun.data = mean_sdl, 
+               geom = "errorbar",
+               width = 0.1,
+               color = "grey60")+
+  stat_summary(mapping = aes(group = TimePoint),
+               fun = mean,
+               geom = "point",
+               shape = 4,
+               color = "grey60")+
+  facet_grid(cols = vars(MetaD_Annot),
+             rows = vars(NBH_Annot))+
+  geom_point(alpha = 0.6)+
+  themeG+
+  scale_colour_manual(values = colorsHC)+
+  theme(panel.grid.major.y = element_line(color = "grey95",
+                                        size = 0.5,
+                                        linetype = "solid"),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  labs(x = "",
+       y = "Fraction")+
+  scale_y_continuous(expand = c(0,0))
+
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_RevisedAnnotation_HC.pdf"),
+       device = "pdf", dpi = 330,
+       width = 8, height=5)
+```
+
+## Density plots of revised annotation
+```{r DensityPlots_RevisedAnnot, fig.height=17, fig.width=7}
+#### 8H - ORIGINAL ANNOTATION ####
+Idents(IntData.B_8h.FilClus)<-'Stimulation'
+Dens.plotlist <- list()
+
+# Generate the density plots and save them in the list
+for (stim in c("ODN2006", "IFNgamma", "MegaCD40L", "CD3/CD28_beads", "Unstimulated")){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_8h.FilClus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "Stimulation", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_8h.FilClus, idents = stim)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+  NoLegend()+
+  coord_fixed()+
+  ylim(-7,7)+
+  xlim(-8,8)+
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        # Make sure squares are obtained
+        aspect.ratio=1,
+        panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        plot.title = element_text(hjust = 0.5, size = 20))
+}
+
+# Update titles of stimulatory conditions if needed
+Dens.plotlist$IFNgamma<-Dens.plotlist[["IFNgamma"]]+
+  labs(title = paste0("IFN-","\U03B3","/R-848"))
+Dens.plotlist$`CD3/CD28_beads`<-Dens.plotlist$`CD3/CD28_beads`+
+  labs(title = "Anti-CD3/CD28")
+
+# Join plots
+plt_OG_8h<-ggarrange(plotlist = Dens.plotlist, ncol = 1, nrow = 5)
+plt_OG_8h<-annotate_figure(plt_OG_8h, 
+                            top = text_grob("Metadata-based annotation - 8h",
+                                            color = "red", 
+                                            face = "bold", size = 14))
+plt_OG_8h
+
+#### 8H - REVISED ANNOTATION ####
+Idents(IntData.B_8h.FilClus)<-'RevisedStim'
+Dens.plotlist <- list()
+
+# Generate the density plots and save them in the list
+for (stim in c("ODN2006", "IFNgamma", "MegaCD40L", "antiCD3CD28", "Unstimulated", "Undefined")){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_8h.FilClus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "RevisedStim", cols = rep("lightgrey", times = 6))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_8h.FilClus, idents = stim)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+    NoLegend()+
+    coord_fixed()+
+    ylim(-7,7)+
+    xlim(-8,8)+
+    theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+          # Make sure squares are obtained
+          aspect.ratio=1,
+          panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(hjust = 0.5, size = 20))
+}
+
+# Update titles of stimulatory conditions if needed
+Dens.plotlist$IFNgamma<-Dens.plotlist[["IFNgamma"]]+
+  labs(title = paste0("IFN-","\U03B3","/R-848"))
+Dens.plotlist$antiCD3CD28<-Dens.plotlist$antiCD3CD28+
+  labs(title = "Anti-CD3/CD28")
+
+# Join plots
+plt_Rev_8h<-ggarrange(plotlist = Dens.plotlist, ncol = 1, nrow = 7)
+plt_Rev_8h<-annotate_figure(plt_Rev_8h, 
+                            top = text_grob("Nhood-based annotation - 8h",
+                                            color = "red", 
+                                            face = "bold", size = 14))
+plt_Rev_8h
+
+#### 30H - ORIGINAL ANNOTATION ####
+Idents(IntData.B_30h.FilClus)<-'Stimulation'
+Dens.plotlist <- list()
+
+# Generate the density plots and save them in the list
+for (stim in c("ODN2006", "IFNgamma", "MegaCD40L", "CD3/CD28_beads", "Unstimulated")){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_30h.FilClus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "Stimulation", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_30h.FilClus, idents = stim)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+    NoLegend()+
+    coord_fixed()+
+    ylim(-7,7)+
+    xlim(-8,8)+
+    theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+          # Make sure squares are obtained
+          aspect.ratio=1,
+          panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(hjust = 0.5, size = 20))
+}
+
+# Update titles of stimulatory conditions if needed
+Dens.plotlist$IFNgamma<-Dens.plotlist[["IFNgamma"]]+
+  labs(title = paste0("IFN-","\U03B3","/R-848"))
+Dens.plotlist$`CD3/CD28_beads`<-Dens.plotlist$`CD3/CD28_beads`+
+  labs(title = "Anti-CD3/CD28")
+
+# Join plots
+plt_OG_30h<-ggarrange(plotlist = Dens.plotlist, ncol = 1, nrow = 5)
+plt_OG_30h<-annotate_figure(plt_OG_30h, 
+                            top = text_grob("Metadata-based annotation - 30h",
+                                            color = "red", 
+                                            face = "bold", size = 14))
+plt_OG_30h
+
+#### 30H - REVISED ANNOTATION ####
+Idents(IntData.B_30h.FilClus)<-'RevisedStim'
+Dens.plotlist <- list()
+
+# Generate the density plots and save them in the list
+for (stim in c("ODN2006", "IFNgamma", "MegaCD40L", "antiCD3CD28", "Unstimulated", "Undefined")){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_30h.FilClus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "RevisedStim", cols = rep("lightgrey", times = 6))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_30h.FilClus, idents = stim)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+    NoLegend()+
+    coord_fixed()+
+    ylim(-7,7)+
+    xlim(-8,8)+
+    theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+          # Make sure squares are obtained
+          aspect.ratio=1,
+          panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(hjust = 0.5, size = 20))
+}
+
+# Update titles of stimulatory conditions if needed
+Dens.plotlist$IFNgamma<-Dens.plotlist[["IFNgamma"]]+
+  labs(title = paste0("IFN-","\U03B3","/R-848"))
+Dens.plotlist$antiCD3CD28<-Dens.plotlist$antiCD3CD28+
+  labs(title = "Anti-CD3/CD28")
+
+# Join plots
+plt_Rev_30h<-ggarrange(plotlist = Dens.plotlist, ncol = 1, nrow = 7)
+plt_Rev_30h<-annotate_figure(plt_Rev_30h, 
+                            top = text_grob("Nhood-based annotation - 30h",
+                                            color = "red", 
+                                            face = "bold", size = 14))
+plt_Rev_30h
+
+# Save plots
+ggsave(plot = plt_OG_8h,
+      filename = file.path(FiguresOut_Path, "SuplFig_DensPlots_8h_MetaDataAnnot.png"),
+       device = "png", dpi = 330,
+       width = 5, height=25, bg = "white")
+ggsave(plot = plt_OG_30h,
+      filename = file.path(FiguresOut_Path, "SuplFig_DensPlots_30h_MetaDataAnnot.png"),
+       device = "png", dpi = 330,
+       width = 5, height=25, bg = "white")
+ggsave(plot = plt_Rev_8h,
+      filename = file.path(FiguresOut_Path, "SuplFig_DensPlots_8h_NhoodAnnot.png"),
+       device = "png", dpi = 330,
+       width = 5, height=35, bg = "white")
+ggsave(plot = plt_Rev_30h,
+      filename = file.path(FiguresOut_Path, "SuplFig_DensPlots_30h_NhoodAnnot.png"),
+       device = "png", dpi = 330,
+       width = 5, height=35, bg = "white")
+```
+
+## Correlation plots - Gene expression
+```{r CorrelationPlots_GeneExpression, fig.width=20, fig.height=20}
+DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.DF_reordered<-DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.DF%>%
+  select(Gene, ODN2006_8h, IFNgamma_8h, MegaCD40L_8h, CD3CD28_8h,
+         ODN2006_30h, IFNgamma_30h, MegaCD40L_30h, CD3CD28_30h,)
+
+pltCorrDens<-ggpairs(DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.DF_reordered,
+        columns = 2:dim(DEG_Stim_Unstim_AllTimes_FilClus.Fixed.Meta.DF)[2],
+        lower = list(continuous = GGally::wrap(plot_lower_scatter_SelGenes.ggpairs, thres = log2FC_thres,
+                                               DEG_Selected_DOWN=DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_DOWN,
+                                               DEG_Selected_UP=DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_UP)),
+        diag = list(continuous = GGally::wrap(plot_diag_density_SelGenes.ggpairs,
+                                              thres = log2FC_thres,
+                                              DEG_Selected_DOWN=DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_DOWN,
+                                              DEG_Selected_UP=DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_UP)),
+        upper = list(continuous = GGally::wrap(plot_upper_correlation_SelGenes.ggpairs,
+                                               DEG_Selected_DOWN=DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_DOWN,
+                                               DEG_Selected_UP=DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_UP)))
+pltCorrDens+
+  theme(axis.text = element_text(size = 12),
+        axis.text.x = element_text(angle = 270, vjust = 0.5, hjust = 0),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 17))
+
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_ExpressionCorrelationPlots.pdf"),
+       device = "pdf", dpi = 330,
+       width = 15, height=20, bg = "white")
+```
+
+## Overlap in DE genes
+
+```{r HeatmapOverlapDEGenes}
+# Place in heatmap, without reordering of the columns
+pdf(file.path(FiguresOut_Path, "SuplFig_Heatmap_Overlap_UpRegulatedGenes.pdf"), 
+    width=9, height=8)
+Heatmap(MatOverlap_UP,
+        row_order = names(DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_UP),
+        column_order = names(DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_UP),
+        col = colorRamp2(c(0, 50, 100), c("white", "#8BD597", "darkgreen")),
+        row_names_side = "left", column_names_side = "top",
+        row_names_gp = gpar(fontsize = 15), column_names_gp = gpar(fontsize = 15),
+        column_names_rot = 45,
+        rect_gp = gpar(col = "white", lwd = 1.5),
+        cell_fun = function(j, i, x, y, w, h, col) { 
+          # add text to each grid
+          grid.text(round(MatOverlap_UP[i, j], digits = 1), x, y,
+                    gp = gpar(fontsize = 15, col = "black"))},
+        name = "Absolute overlap")
+dev.off()
+
+# Place in heatmap, without reordering of the columns
+pdf(file.path(FiguresOut_Path, "SuplFig_Heatmap_Overlap_DownRegulatedGenes.pdf"), 
+    width=9, height=8)
+Heatmap(MatOverlap_DOWN,
+        row_order = names(DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_DOWN),
+        column_order = names(DEG_Stim_Unstim_8hvs30_FilClus.Fixed.Meta_DOWN),
+        row_names_gp = gpar(fontsize = 15), column_names_gp = gpar(fontsize = 15),
+        col = colorRamp2(c(0, 350, 700), c("white", "#EF798C", "darkred")),
+        rect_gp = gpar(col = "white", lwd = 1.5),
+        column_names_rot = 45,
+        row_names_side = "left", column_names_side = "top",
+        cell_fun = function(j, i, x, y, w, h, col) { 
+          # add text to each grid
+          grid.text(round(MatOverlap_DOWN[i, j], digits = 1), x, y,
+                    gp = gpar(fontsize = 15, col = "black"))},
+        name = "Absolute overlap")
+dev.off()
+```
+
+## Expression values of unique subsets
+```{r ExpLevels_UniqueSubsets}
+# PlotData
+ggplot(topGenes_8h_30h_unique.Data.Fixed.Meta,
+       mapping = aes(x = Stimulation,
+                     y = Gene))+
+  facet_grid(.~TimePoint)+
+  geom_hline(mapping = aes(yintercept = Gene),
+             color = "grey80", 
+             alpha = 0.5)+
+  geom_vline(mapping = aes(xintercept = Stimulation),
+             color = "grey80",
+             alpha = 0.5)+
+  geom_point(mapping = aes(size = abs(Score),
+                           fill = avg_log2FC),
+             colour = "grey50",
+             shape = 21)+
+  geom_point(data = topGenes_8h_30h_unique.Data.Fixed.Meta%>%
+               filter(InTop==TRUE),
+             shape = 20, color = "black",
+             size = 0.1)+
+  scale_fill_gradient2(low = colDirection["DOWN"], 
+                        mid = "white", 
+                        high = colDirection["UP"],
+                        midpoint = 0)+
+  scale_size(range = c(1,6))+
+  themeG+
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1, hjust = 0, size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank())+
+  scale_x_discrete(position = "top")+
+  ggtitle("Top genes based on  hard cut-off - Unique subsets only")
+
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_ExpressionLevels_DEG_UniqueSubsets.pdf"),
+       device = "pdf", dpi = 330,
+       width = 6, height=10, bg = "white")
+```
+
+## GSEA showing top 10 GSE
+
+```{r GSEA_Top10, fig.height=15, fig.width=15}
+# Plot data
+(ggplot(data = dotPlot.Data.Fixed.Meta[!is.na(dotPlot.Data.Fixed.Meta$SelectIn),])+
+   geom_tile(mapping = aes(x = SelectIn,
+                           y = GeneSet),
+             na.rm = T, fill = "grey65")+
+    themeG+theme(axis.title = element_blank())+
+    scale_x_discrete(position = "top"))+
+(ggplot(data = dotPlot.Data.Fixed.Meta)+
+  geom_vline(mapping = aes(xintercept = Stimulation),
+             color = "grey80", 
+             alpha = 0.5)+
+  geom_hline(mapping = aes(yintercept = GeneSet),
+             color = "grey80", 
+             alpha = 0.5)+
+  geom_point(mapping = aes(x = Stimulation,
+                     y = GeneSet,
+                     size = Overlap,
+                     fill  = -log10(AdjPval)),
+             shape = 21, color = "grey50")+
+  scale_fill_gradientn(colors = c("white", "lightblue", "darkblue", "#04074E"),
+                        breaks = c(0, 10, 20, 30),
+                        values = c(0, 0.05, 0.50, 0.95, 1))+
+  scale_size(range = c(0,6))+
+  themeG+
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1, hjust = 0), 
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  scale_x_discrete(position = "top")+
+  facet_grid(.~TimePoint)+
+  theme(axis.text.y = element_blank(),
+        axis.title = element_blank()))+
+  plot_layout(widths = c(1, 6))+ 
+  plot_annotation(title = "Hard Cutoffs for Nhood selection")
+
+# Save plot
+ggsave(filename = file.path(FiguresOut_Path, "SuplFig_Top10_GSEA.pdf"),
+       device = "pdf", dpi = 330,
+       width = 12, height=15, bg = "white")
+```
