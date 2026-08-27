@@ -8,6 +8,9 @@
 - **`03_MiloR_DiffGeneExp`**: This folder contains the code used for the MiloR neighbourhood definition, abundancy testing, refinement of the cell annotation and differential gene expression.
 - **`04_MultiNicheNetR`**: This folder contains the code used for cell-cell communication inference and visualization using the NicheNetR package.
 
+## Reference to manuscript and data
+The manuscript is accessible via <t style="color:red;">XXX</t>. Data is accessible on EGA via accession ID <t style="color:red;">XXX</t>.
+
 ## Preprocessing of the pipeline.
 The code and necessary additional data files for preprocessing of the raw sequencing data files are available in the folder **`01_PreprocessingPipeline`**. An overview of the files and their goal is given in the table below. Furthermore, in each of the scripts, additional information on how the code works and and which parameters are expected is added.
 
@@ -65,7 +68,5 @@ Cell-cell communication analysis was performed using MulitNicheNetR as stated in
 
 ## Manuscript figure generation
 In the file `FiguresManuscript.Rmd` all the code used to generate the main and supplementary figures is merged.
-
-
 
 </div>
