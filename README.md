@@ -3,10 +3,10 @@
 # scRNAseq_InVitro_ImmuneStimulation
  This repository encloses interesting code supporting the manuscript entitled "Stimulation strategy matters: A B-cell focused single-cell transcriptomic study on in vitro stimulated immune cells". This repository contains four folders, each of them going more in depth on specific analysis parts. 
 
-- **01_PreprocessingPipeline**: This folder contains the code used for processing the raw sequencing data files.
-- **02_DataIntegration**: This folder contains the code used for integration of the data prior downstream processing.
-- **03_MiloR_AbundancyTesting**: This folder contains the code used for the MiloR neighbourhood definition, abundancy testing and refinement of the cell annotation.
-- **04_MultiNicheNetR**: This folder contains the code used for cell-cell communication inference and visualization using the NicheNetR package.
+- **`01_PreprocessingPipeline`**: This folder contains the code used for processing the raw sequencing data files.
+- **`02_DataIntegration`**: This folder contains the code used for integration of the data prior downstream processing.
+- **`03_MiloR_DiffGeneExp`**: This folder contains the code used for the MiloR neighbourhood definition, abundancy testing, refinement of the cell annotation and differential gene expression.
+- **`04_MultiNicheNetR`**: This folder contains the code used for cell-cell communication inference and visualization using the NicheNetR package.
 
 ## Preprocessing of the pipeline.
 The code and necessary additional data files for preprocessing of the raw sequencing data files are available in the folder **`01_PreprocessingPipeline`**. An overview of the files and their goal is given in the table below. Furthermore, in each of the scripts, additional information on how the code works and and which parameters are expected is added.
@@ -29,7 +29,7 @@ Furthermore, the files in the **`01_PreprocessingPipeline`** are elaborated on i
 |
 
 ## Data integration
-Seurat was used to integrate the data obtain in distinct, so called 'CEV' single-cell sample pools. This was performed using the following scripts. 
+Seurat was used to integrate the data obtain in distinct, so called 'CEV' single-cell sample pools. This was performed using the following scripts available in the **`02_DataIntegration`** folder. 
 
 | File name                             | Information                              |
 | :----:                                | :----                                   |
@@ -46,6 +46,15 @@ Seurat was used to integrate the data obtain in distinct, so called 'CEV' single
 | `008_CheckBClusters.R` | This script explains the additional removal of specific B cell clusters in the final B cell datasets.| 
 | `012_BCellFiltering_DEGenes.Rmd` | Final filtering step of the B cell subset as in depth explained in the manuscript. _Note: Differential expression as coded in this script was optimized after MiloR neighbourhood abundance testing and cell annotation refinement_ | 
 
+## MiloR neighbourhood definition and abundance testing followed by differential gene expression
+This folder contains the code used for the analysis based on neighbourhood definition using MiloR. Furthermore, cell annotation was refined after MiloR analysis and was used for final differential gene expression between conditions. The script mentioned below are available in the **`03_MiloR_DiffGeneExp`**.
+
+| File name                             | Information                              |
+| :----:                                | :----                                   |
+| `013_MiloR_DA_FilteredBCells.Rmd` | MiloR analysis. |
+| `014_DEGenes_SelectedNhoods.Rmd` | Cell annotation refinement and differential gene expression. |
+
+## Cell-cell communication analysis with MultiNicheNet R 
 
 
 </div>

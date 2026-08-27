@@ -1,0 +1,1885 @@
+---
+title: "012_MiloR_DA_FilteredBCells"
+author: "Tine D'hamers"
+date: "2025-06-27"
+output: html_document
+params:
+  path_Results: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/002_NoBaseline/202506_Filtered_BCells"
+  date: "20250625"
+  date2: "20250820"
+  date3: "20250926"
+---
+
+# Preparatory steps
+
+## Load necessary libraries
+
+```{r LoadLibraries}
+# Single cell data manipulation
+library(Seurat)
+# library(scDblFinder)
+# General data manipulation
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(xlsx)
+library(stringr)
+# Plot generation
+library(ggplot2)
+library(ggpubr)
+library(ggh4x)
+library(ggbeeswarm)
+library(RColorBrewer)
+library(rstatix)
+library(ComplexHeatmap)
+library(circlize)
+library(factoextra)
+library(Rtsne)
+library(ggridges)
+library(uwot)
+library(ggnewscale)
+library(patchwork)
+# Differential abundance analysis
+library(miloR, 
+        lib.loc = "/kyukon/data/gent/vo/002/gvo00224/TOBI/Projects/SingleCellPipeline/resultsCeline/seuratintegrate/Rpackages/R_4.2.1-foss-2022a")
+# library(scater)
+library(openxlsx)
+```
+
+## Load necessary function and aesthetics
+```{r Functions_Aesthetics}
+# Themes
+source("../../PlotThemes_sc_CVID.R")
+colorsStim<-c(colorsStim, c("CD3/CD28" = colorsStim[["CD3/CD28_beads"]]))
+
+options(bitmapType='cairo')
+
+source("../../Functions_sc_CVID.R")
+
+# Coloring for the DE genes
+colDirection<-c("DOWN" = "darkred",
+                "UP" = "darkgreen",
+                "MIXED" = "#D5BBB1",
+                "NS" = "grey80")
+grid.grey = "grey95"
+
+# Variable storage
+FDR_thres<-0.1
+logFC_thres<-2
+```
+
+## Load dataset
+
+Differential abundance analysis (DA) is performed on the filtered subset of the B cells stimulated for both 8h and 30h. These datasets are generated in the script `012_BCellFiltering_DEGenes.Rmd`.
+
+```{r LoadDatasets}
+IntData.B_8h.FilCus <- readRDS(file = file.path(params$path_Results,
+                                                 "SeuratObjects",
+                                                 paste0(params$date, "_seuratObj_NoBase_Integrated_Bclusters_Filtered_8h.rds")))
+IntData.B_30h.FilCus <- readRDS(file = file.path(params$path_Results,
+                                                       "SeuratObjects",
+                                                       paste0(params$date, "_seuratObj_NoBase_Integrated_Bclusters_Filtered_30h.rds")))
+```
+
+# Differential abundance analysis with MiloR
+
+## 8 hours of stimulation
+
+### Data analysis using MiloR
+
+```{r MiloR_DAanalysis_8h}
+set.seed(2024)
+# Generation of the milo object and graph
+# Conform the vignette of MiloR
+milo.B_8h.FilClus<-MiloDA(object = IntData.B_8h.FilCus, assay = "RNA", k = 50, d = 20, prop = 0.15,
+                          # As recommended by Noah, perform KNN graph generation based on the dimensionality reduction technique
+                          # containing the most information
+                          RedDim = "B_filtered_CCAInt.rna", sampleID = "PatStim", 
+                          design = c("PatStim", "Stimulation"), overlap = 5)
+# Save the object for later use
+saveRDS(milo.B_8h.FilClus, 
+        file = file.path(params$path_Results, "MiloR",
+                         paste(params$prefix_output, "MiloRobject_FilteredB_8h.rds", sep = "_")))
+
+milo.B_8h.FilClus$size_histogram
+# Set k such that you have a minimum of Sx5 counts per nhood, where S=total number of samples
+
+# Statistical testing
+milo.B_8h.FilClus$milo_design$Stimulation <- milo.B_8h.FilClus$milo_design$Stimulation%>%
+  gsub(pattern = "CD3/CD28_beads", replacement = "antiCD3CD28")
+contrasts<-c("StimulationIFNgamma - StimulationUnstimulated", "StimulationMegaCD40L - StimulationUnstimulated", 
+             "StimulationantiCD3CD28 - StimulationUnstimulated", "StimulationODN2006 - StimulationUnstimulated")
+
+# Extract results of differential abundance analysis
+# Note: This part is a bit different from what is performed in 006_NoBase_visualization_doubletCheck_ClusterAnalysis_IntegrationV5.Rmd script
+DA.B_8h.FilClus<-testNhoods(x = milo.B_8h.FilClus$milo_graph, design = ~0+Stimulation, design.df = milo.B_8h.FilClus$milo_design,
+                            # Correct for multiple testing using a spatial FDR correction
+                            fdr.weighting = "graph-overlap", 
+                            model.contrasts = contrasts, reduced.dim = "B_filtered_CCAInt.rna"%>%toupper())
+
+# Rename the columns of the DA results
+names(DA.B_8h.FilClus)
+DA.B_8h.FilClus<- DA.B_8h.FilClus%>%
+  pivot_longer(cols = starts_with(("logFC")),
+               names_to = "Stimulation",
+               values_to = "logFC")%>%
+  mutate(Stimulation = gsub(pattern = "logFC.Stimulation", 
+                            replacement = "",
+                            x = Stimulation),
+         Stimulation = gsub(pattern = "...S.*", 
+                            replacement = "",
+                            x = Stimulation))
+``` 
+
+```{r ReadIn_MiloObjects_8h, eval=FALSE}
+milo.B_8h.FilClus<-readRDS(file = file.path(params$path_Results, "MiloR",
+                                            paste(params$prefix_output, "MiloRobject_FilteredB_8h.rds", sep = "_")))
+```
+
+### Neighbourhood graph plotting
+
+```{r MiloDA_BCells_Filtered_Visualisation_8h, fig.height=5, fig.width=12}
+# Visualization 
+# Generation of plots
+pIFN<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "IFNgamma"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = paste0("IFN","\U03B3","/R-848"))+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pCD40L<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "MegaCD40L"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "MegaCD40L")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pCD3CD28<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "antiCD3CD28"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "Anti-CD3/CD28")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pODN<-plotNhoodGraphDA(x = milo.B_8h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_8h.FilClus%>%filter(Stimulation == "ODN2006"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "ODN2006")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pUMAP<-DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna", group.by = "Stimulation",
+        pt.size = 0.001)+
+    scale_color_manual(values = colorsStim)+
+    labs(title=NULL, x = "UMAP1", y = "UMAP2", color = "Stimulation")+
+    theme(axis.line = element_blank(), axis.text = element_blank(),
+          axis.ticks = element_blank(), axis.title = element_blank())+
+    guides(color = guide_legend(override.aes = list(size=1))) 
+# Via patchwork, arranging of plots
+pUMAP + plot_spacer() + ( (pIFN + plot_spacer() + pODN + plot_layout(widths = c(1,0,1))) / 
+                            (pCD3CD28 + plot_spacer() + pCD40L + plot_layout(widths = c(1,0,1))))+
+  plot_layout(guides = "collect", widths = c(1,0,1)) & 
+  scale_fill_gradientn(limits = range(min(DA.B_8h.FilClus$logFC), max(DA.B_8h.FilClus$logFC)),
+                       colours = c("#8C2F39", "white", "#2D0650"),
+                       name = "LogFC") &
+  labs(size = "Size of Nhood") &
+  guides(fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines")))) &
+  theme(plot.subtitle = element_text(size = 10, color = "gray30"),
+        legend.text =element_text(margin = margin(t = 1,l = 3), size = 8, color = "gray30"),
+        legend.title = element_text(size = 10, color = "gray30"),
+        plot.margin = margin(1,0,0,0)) &
+  theme(legend.key.size = unit(1, "lines"),
+        legend.spacing.y = unit(0.5, "lines"),
+        legend.spacing.x = unit(0.5, "lines"),
+        legend.margin = margin(1,0,0,1), 
+        legend.key.spacing = unit(0.3, "lines"))
+  
+ggsave(filename = file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$prefix_output, "DA_FilteredB_8h_RefUnstim.pdf",
+                                  sep = "_")),
+       bg = "white", width = 25, height = 14, device = "pdf", units = "cm",
+       dpi = 400)
+
+# Cleaning workspace
+rm(pIFN, pODN,pCD3CD28, pCD40L, pUMAP)
+```
+
+### Beeswarm plots based on original clusters
+
+```{r OriginalClustering_Nhoods_8h, fig.height=10, fig.width=10}
+# Annotation of the Nhoods per stimulation linking to the original clusters
+DA.B_8h.FilClus_ClustIFNG <- annotateNhoods(milo.B_8h.FilClus$milo_graph, 
+                                            # Only possible per stimulation
+                                            DA.B_8h.FilClus%>%
+                                              filter(Stimulation == "IFNgamma"), 
+                                            # Linking back to the clusters obtained after filtering and CCA integration
+                                            coldata_col = "B_filtered_CCAInt_clusters")
+# Convert to dataframe to use as input for the plotDAbeeswarm function
+DA.B_8h.FilClus_ClustIFNG <- as.data.frame(DA.B_8h.FilClus_ClustIFNG)
+
+# Check the outcome after Nhood annotation
+## Interesting: the fractions of linked clusters to the Nhoods is given as well
+head(DA.B_8h.FilClus_ClustIFNG)
+
+# Annotation of the Nhoods per stimulation linking to the original clusters
+plotBee_ClusAnnot <- lapply(unique(DA.B_8h.FilClus$Stimulation),
+                                     FUN = function(layer){
+                                       # Annotation of the Nhoods per stimulation linking to the original clusters
+                                       DA.B_8h.FilClus_ClusAnnot.tmp <- annotateNhoods(milo.B_8h.FilClus$milo_graph,
+                                                                                       # Only possible per stimulation
+                                                                                      DA.B_8h.FilClus%>%
+                                                                                        filter(Stimulation == layer), 
+                                                                                      # Linking back to the clusters obtained after filtering and CCA integration
+                                                                                      coldata_col = "B_filtered_CCAInt_clusters")
+                                       # Highligh neighbourhoods that are a mix of clusters
+                                       DA.B_8h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters <- ifelse(
+                                         DA.B_8h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters_fraction < 0.7, "Mixed", 
+                                         DA.B_8h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters)
+                                       # Convert to dataframe to use as input for the plotDAbeeswarm function
+                                       DA.B_8h.FilClus_ClusAnnot.tmp <- as.data.frame(DA.B_8h.FilClus_ClusAnnot.tmp)%>%
+                                         # Ordering the clusters to visualize properly in the graph
+                                         mutate(B_filtered_CCAInt_clusters = factor(B_filtered_CCAInt_clusters,
+                                                                                    levels = unique(DA.B_8h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters) %>%
+                                                                                      gtools::mixedsort(decreasing = T),
+                                                                                    ordered = T))
+                                       
+                                       # Check the outcome
+                                       head(DA.B_8h.FilClus_ClusAnnot.tmp)
+                                       return(list(plotDAbeeswarm(DA.B_8h.FilClus_ClusAnnot.tmp,
+                                                      group.by = "B_filtered_CCAInt_clusters", alpha = FDR_thres)+
+                                         themeG+
+                                         theme(panel.grid.major.y = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                                                                 linewidth = 1)),
+                                         DA.B_8h.FilClus_ClusAnnot.tmp))})
+# Change names of the list
+names(plotBee_ClusAnnot) <- unique(DA.B_8h.FilClus$Stimulation)
+# Change names of the lists in the list, aka data and plot layer
+for (layer in names(plotBee_ClusAnnot)){
+  names(plotBee_ClusAnnot[[layer]])<-c("plot", "data")
+}
+
+# Plotting result
+(plotBee_ClusAnnot$IFNgamma$plot+labs(subtitle = "IFN") + plotBee_ClusAnnot$ODN2006$plot + labs(subtitle = "ODN2006")) /
+  (plotBee_ClusAnnot$antiCD3CD28$plot + labs(subtitle = "anti-CD3/CD28") + plotBee_ClusAnnot$MegaCD40L$plot +labs(subtitle = "CD40L"))+
+  plot_annotation("8h") & labs(x = "Original clusters") & ylim(-10,10)
+```
+
+### Selection of interesting neighbourhoods - soft cut-offs per stimulation
+
+#### Unstimulated neighbourhoods
+
+```{r NBH_Selection_8h_UnstimulatedCells}
+CutOff_Frac<-0.5
+# Join all data of the beesswarms over the stimulations
+plotBee_ClusAnnot.data<-rbind(plotBee_ClusAnnot$IFNgamma$data,
+                              plotBee_ClusAnnot$MegaCD40L$data,
+                              plotBee_ClusAnnot$antiCD3CD28$data,
+                              plotBee_ClusAnnot$ODN2006$data)
+
+### Unstimulated clusters/neighbourhood
+# Check minimum and maximum LogFC
+NBH_Selection_Unstim.CutOffs <- plotBee_ClusAnnot.data%>%
+  filter(B_filtered_CCAInt_clusters == 0)%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = min(logFC)*(1-CutOff_Frac))
+
+NBH_Selection_Unstim.CutOffs
+```
+```{r NBH_Overlap_Unstimulated}
+# Filtering based on the cutoffs
+NBH_Selection_Unstim<-left_join(plotBee_ClusAnnot.data,
+                                NBH_Selection_Unstim.CutOffs%>%
+                                  select(Stimulation, B_filtered_CCAInt_clusters, CutOff))%>%
+  filter(B_filtered_CCAInt_clusters == 0,
+         logFC < CutOff)
+
+# Prepare UpsetPlotData
+NBH_Selection_Unstim.CombMat<-lapply(unique(NBH_Selection_Unstim$Stimulation),
+                                     FUN = function(stim){(NBH_Selection_Unstim%>%filter(Stimulation == stim))[["Nhood"]]})
+names(NBH_Selection_Unstim.CombMat)<-unique(NBH_Selection_Unstim$Stimulation)
+NBH_Selection_Unstim.CombMat<-make_comb_mat(NBH_Selection_Unstim.CombMat, mode = "distinct")
+# Plot upset plot
+UpSet(NBH_Selection_Unstim.CombMat,
+      comb_order = order(comb_size(NBH_Selection_Unstim.CombMat), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(NBH_Selection_Unstim.CombMat),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(NBH_Selection_Unstim.CombMat),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))))
+
+# Selected NBHs
+NBH_Selection_Unstim.Numbers<-sapply(X = c("1110", "1111", "1011", "1101"),
+                                     FUN = function(set){extract_comb(NBH_Selection_Unstim.CombMat, set)})%>%
+  unlist()
+length(NBH_Selection_Unstim.Numbers)
+```
+
+#### Stimulated neighbourhoods
+
+```{r NBH_Selection_8h_Stimulations, fig.height=10, fig.width=10}
+### IFNgamma and ODN2006
+# Number of clusters plotted in the Beeswarm plot
+NumClus<-length(levels(plotBee_ClusAnnot.data$B_filtered_CCAInt_clusters))
+# Obtain the cutoff values per cluster and per Stimulation
+# Only focusing on IFNgamma and ODN2006 stimulation
+NBH_Selection_IFNgamma_ODN2006.CutOffs <- plotBee_ClusAnnot.data%>%
+  filter(B_filtered_CCAInt_clusters %in% c(1,3,6,12), 
+         Stimulation %in% c("IFNgamma", "ODN2006"))%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = max(logFC)*(1-CutOff_Frac))%>%
+  mutate(positionHigh = NumClus - as.numeric(as.character(B_filtered_CCAInt_clusters)) + 0.5,
+         positionLow = NumClus - as.numeric(as.character(B_filtered_CCAInt_clusters)) - 0.5)
+# Check the obtained cutoffs
+NBH_Selection_IFNgamma_ODN2006.CutOffs%>%
+  arrange(B_filtered_CCAInt_clusters)
+
+### MegaCD40L and Anti-CD3/C29
+# Obtain the cutoff values per cluster and per Stimulation
+# Only focusing on IFNgamma and ODN2006 stimulation
+NBH_Selection_CD40L_CD3CD28.CutOffs <- plotBee_ClusAnnot.data%>%
+  filter(B_filtered_CCAInt_clusters %in% c(2,5,7), 
+         Stimulation %in% c("MegaCD40L", "antiCD3CD28"))%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = max(logFC)*(1-CutOff_Frac))%>%
+  mutate(positionHigh = NumClus - as.numeric(as.character(B_filtered_CCAInt_clusters)) + 0.5,
+         positionLow = NumClus - as.numeric(as.character(B_filtered_CCAInt_clusters)) - 0.5)
+# Check the obtained cutoffs
+NBH_Selection_CD40L_CD3CD28.CutOffs%>%
+  arrange(B_filtered_CCAInt_clusters)
+```
+
+#### Merging of cut-off values and selected NBH indication
+
+
+```{r NBH_Selection_8h}
+NBH_Selection.CutOffs<-rbind(NBH_Selection_Unstim.CutOffs,
+                             NBH_Selection_IFNgamma_ODN2006.CutOffs,
+                             NBH_Selection_CD40L_CD3CD28.CutOffs)
+
+# Add cutoffs to the data
+plotBee_ClusAnnot.data <- left_join(plotBee_ClusAnnot.data,
+                                    NBH_Selection.CutOffs%>%
+                                      select(CutOff, Stimulation, B_filtered_CCAInt_clusters),
+                                    by = c("Stimulation", "B_filtered_CCAInt_clusters"))
+# Indicate which neighbourhoods to include in downstream analysis
+plotBee_ClusAnnot.data <- plotBee_ClusAnnot.data%>%
+  # Neighbourhood is selected if logFC is larger then the cutoff (only for stimulated clusters)
+  # OR is present in the selected NBH of the unstimulated cluster
+  mutate(ToInclude = (logFC > CutOff) | (Nhood %in% NBH_Selection_Unstim.Numbers))%>%
+  mutate(ToInclude = replace_na(ToInclude, FALSE))
+```
+
+
+#### Visualization of cutoffs and selected neighbourhoods
+
+```{r NBH_PlotBeeswarmWithCutoffs_Arrows_8h, fig.height=10, fig.width=10}
+plotBee_ClusAnnot$IFNgamma$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_IFNgamma_ODN2006.CutOffs%>%
+                 filter(Stimulation == "IFNgamma"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_IFNgamma_ODN2006.CutOffs%>%
+                 filter(Stimulation == "IFNgamma"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "npc")))+
+(plotBee_ClusAnnot$ODN2006$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_IFNgamma_ODN2006.CutOffs%>%
+                 filter(Stimulation == "ODN2006"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_IFNgamma_ODN2006.CutOffs%>%
+                 filter(Stimulation == "ODN2006"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "npc"))))+
+(plotBee_ClusAnnot$MegaCD40L$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_CD40L_CD3CD28.CutOffs%>%
+                 filter(Stimulation == "MegaCD40L"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_CD40L_CD3CD28.CutOffs%>%
+                 filter(Stimulation == "MegaCD40L"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "npc"))))+
+(plotBee_ClusAnnot$antiCD3CD28$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_CD40L_CD3CD28.CutOffs%>%
+                 filter(Stimulation == "antiCD3CD28"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_CD40L_CD3CD28.CutOffs%>%
+                 filter(Stimulation == "antiCD3CD28"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "native"))))+
+  plot_annotation("8h") & labs(x = "Original clusters") & ylim(-10,10)
+```
+
+```{r NBH_PlotBeeswarmWithCutoffs_8h, fig.height=10, fig.width=10}
+shapeValues = c("TRUE" = 19, "FALSE" = 1)
+sizeValues = c("TRUE" = 1, "FALSE" = 0.5)
+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "IFNgamma"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "IFNgamma")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "ODN2006"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "ODN2006")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "antiCD3CD28"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "Anti-CD3/CD28")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.data%>%filter(Stimulation == "MegaCD40L"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "MegaCD40L")+
+  plot_annotation("8h") & labs(x = "Original clusters") & ylim(-10,10)&
+  themeG &
+  theme(panel.grid.major.y = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                          linewidth = 1)) &  NoLegend()
+```
+
+```{r NBH_Retained_AbsoluteNumbers_8h}
+## Retained number of NBHs per cluster
+plotBee_ClusAnnot.data%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(RetainedNBH = sum(ToInclude))%>%
+  filter(RetainedNBH != 0)%>%
+  arrange(B_filtered_CCAInt_clusters)
+
+## Retained number of NBHs per Stimulation
+plotBee_ClusAnnot.data%>%
+  filter(B_filtered_CCAInt_clusters != 0)%>%
+  group_by(Stimulation)%>%
+  summarise(Retained_StimNBH = sum(ToInclude))
+```
+
+#### Extraction of the cell IDs of interest based on the selected NBHs
+
+```{r ExtractionCellIDS_8h, echo=FALSE}
+# Unstimulated
+# Selection of cells linked to the selected NBHs
+NBH_Selection_Unstim.Cells<-sapply(as.numeric(NBH_Selection_Unstim.Numbers),
+                                   FUN = function(nhood)
+                                     {nhoods(milo.B_8h.FilClus$milo_graph)@Dimnames[[1]][nhoods(milo.B_8h.FilClus$milo_graph)[,nhood]==1]})%>%
+                                       unlist()%>%
+                                       unique()
+
+# Selection of the Nhoods of interest only linked to a stimulation
+NBH_Selection.Nhoods<-plotBee_ClusAnnot.data%>%
+  filter(ToInclude)%>%
+  select(Nhood, Stimulation)
+# Selection of cellIDS
+for (nhood in unique(NBH_Selection.Nhoods$Nhood)){
+  if (nhood %in% NBH_Selection_Unstim.Numbers){
+    # Keep track of unstimulated Nhoods as well
+    Condition <- "Unstimulated"
+  } else {
+    Condition <- "Stimulated"
+  }
+  ExtractedCells.tmp <- data.frame(Nhood = nhood,
+                                   CellID = nhoods(milo.B_8h.FilClus$milo_graph)@Dimnames[[1]][nhoods(milo.B_8h.FilClus$milo_graph)[,nhood]==1],
+                                   Condition = Condition)
+  if (!exists("NBH_Selection.Cells") || (dim(NBH_Selection.Cells)[1]) == 0){
+    message("Creating dataframe")
+    NBH_Selection.Cells <- ExtractedCells.tmp
+  } else {
+    message("\nJoining additional cells")
+    NBH_Selection.Cells <- rbind(NBH_Selection.Cells,
+                                 ExtractedCells.tmp)
+  }
+  # Clean environment
+  rm(ExtractedCells.tmp)
+}
+
+# Joining the Nhood information to the Cell IDs
+NBH_Selection.Cells <- left_join(NBH_Selection.Cells,
+                                 NBH_Selection.Nhoods,
+                                 by = "Nhood")
+# Annotate the cells that are overlapping with the unstimulated cells
+NBH_Selection.Cells <- NBH_Selection.Cells%>%
+  mutate(Condition = case_when(
+    CellID %in% NBH_Selection_Unstim.Cells ~ "Unstimulated",
+    TRUE ~ "Stimulated"
+  ))
+```
+
+
+#### Save selection of cells
+```{r SaveSelectedCells_8h}
+# Create a blank workbook
+WorkBook <- createWorkbook()
+
+# Add some sheets to the workbook
+addWorksheet(WorkBook, "CutOffs")
+addWorksheet(WorkBook, "Nhoods_Sel")
+addWorksheet(WorkBook, "Cells_Sel")
+addWorksheet(WorkBook, "UnstimCells")
+addWorksheet(WorkBook, "OverviewData")
+
+# Write the data to the sheets
+writeData(WorkBook, sheet = "CutOffs", 
+          x = NBH_Selection.CutOffs%>%
+            select(-positionHigh, -positionLow))
+writeData(WorkBook, sheet = "Nhoods_Sel", 
+          x = NBH_Selection.Nhoods)
+writeData(WorkBook, sheet = "Cells_Sel", 
+          x = NBH_Selection.Cells)
+writeData(WorkBook, sheet = "UnstimCells",
+          x = NBH_Selection_Unstim.Cells)
+writeData(WorkBook, sheet = "OverviewData",
+          x = plotBee_ClusAnnot.data)
+
+# Export the file
+saveWorkbook(WorkBook, 
+             # overwrite = T,
+             file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")))
+```
+
+```{r readInData_8h, eval=FALSE}
+NBH_Selection.Nhoods<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "Nhoods_Sel")
+NBH_Selection.Cells<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "Cells_Sel")
+
+NBH_Selection_Unstim.Cells<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "UnstimCells")
+plotBee_ClusAnnot.data<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "OverviewData")
+```
+
+### Selection of interesting neighbourhoods - hard cutoff over stimulations
+
+#### Unstimulated neighbourhoods
+
+```{r NBH_Selection_8h_UnstimulatedCells_FIXED}
+# Define hard cutoff
+CutOff.Fixed<-3
+# Join all data of the beeswarms over the stimulations
+plotBee_ClusAnnot.Fixed.data<-rbind(plotBee_ClusAnnot$IFNgamma$data,
+                              plotBee_ClusAnnot$MegaCD40L$data,
+                              plotBee_ClusAnnot$antiCD3CD28$data,
+                              plotBee_ClusAnnot$ODN2006$data)
+```
+
+```{r NBH_Overlap_Unstimulated_FIXED}
+# Filtering based on the cutoffs
+NBH_Selection_Unstim.Fixed<-plotBee_ClusAnnot.Fixed.data%>%
+  mutate(CutOff_Fixed = -CutOff.Fixed)%>%
+  filter(B_filtered_CCAInt_clusters %in% c(0, 9, 11, 13),
+         logFC < CutOff_Fixed)
+
+# Prepare UpsetPlotData
+NBH_Selection_Unstim.Fixed.CombMat<-lapply(unique(NBH_Selection_Unstim.Fixed$Stimulation),
+                                           FUN = function(stim){(NBH_Selection_Unstim.Fixed%>%filter(Stimulation == stim))[["Nhood"]]})
+names(NBH_Selection_Unstim.Fixed.CombMat)<-unique(NBH_Selection_Unstim.Fixed$Stimulation)
+NBH_Selection_Unstim.Fixed.CombMat<-make_comb_mat(NBH_Selection_Unstim.Fixed.CombMat, mode = "distinct")
+# Plot upset plot
+UpSet(NBH_Selection_Unstim.Fixed.CombMat,
+      comb_order = order(comb_size(NBH_Selection_Unstim.Fixed.CombMat), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(NBH_Selection_Unstim.Fixed.CombMat),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(NBH_Selection_Unstim.Fixed.CombMat),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))))
+
+# Selected NBHs - overlap in at least 3 of the stimulatory conditions
+NBH_Selection_Unstim.Fixed.Numbers<-sapply(X = c("1110", "1111", "1011", "1101"),
+                                     FUN = function(set){extract_comb(NBH_Selection_Unstim.Fixed.CombMat, set)})%>%
+  unlist()
+length(NBH_Selection_Unstim.Fixed.Numbers)
+
+# Select the neighbourhoods based on the overlap
+NBH_Selection_Unstim.Fixed<-NBH_Selection_Unstim.Fixed%>%
+  mutate(ToInclude = case_when(
+    Nhood %in% NBH_Selection_Unstim.Fixed.Numbers ~ TRUE,
+    TRUE ~ FALSE))
+```
+
+#### Stimulated neighbourhoods 
+
+```{r NBH_Selection_8h_Stimulations_FIXED, fig.height=10, fig.width=10}
+# Filtering based on the cutoffs
+NBH_Selection_Stim.Fixed<-plotBee_ClusAnnot.Fixed.data%>%
+  mutate(CutOff_Fixed = CutOff.Fixed)%>%
+  filter(B_filtered_CCAInt_clusters != 0,
+         logFC > CutOff_Fixed)
+
+# Indicate which NBHs to include
+NBH_Selection_Stim.Fixed<-NBH_Selection_Stim.Fixed%>%
+  mutate(ToInclude = case_when(
+    Stimulation %in% c("IFNgamma", "ODN2006") & B_filtered_CCAInt_clusters %in% c(1, 3, 6, 12) ~ TRUE,
+    Stimulation %in% c("antiCD3CD28", "MegaCD40L") & B_filtered_CCAInt_clusters %in% c(2, 5, 7) ~TRUE,
+    TRUE ~ FALSE
+  ))
+
+# Check the number of retained neighbourhoods per stimulation and cluster
+table(NBH_Selection_Stim.Fixed$Stimulation,
+      NBH_Selection_Stim.Fixed$B_filtered_CCAInt_clusters)
+# Check the number of retained neighbourhoods per stimulation
+table(NBH_Selection_Stim.Fixed$Stimulation,
+      NBH_Selection_Stim.Fixed$ToInclude)
+```
+
+#### Merging of cut-off values and selected NBH indication
+
+
+```{r NBH_Selection_8h}
+NBH_Selection.Fixed<-rbind(NBH_Selection_Unstim.Fixed,
+                           NBH_Selection_Stim.Fixed)
+
+# Add cutoffs to the data
+plotBee_ClusAnnot.Fixed.data <- left_join(plotBee_ClusAnnot.Fixed.data,
+                                    NBH_Selection.Fixed%>%
+                                      select(CutOff_Fixed, Stimulation, Nhood, ToInclude),
+                                    by = c("Stimulation", "Nhood"))
+# Indicate which neighbourhoods to include in downstream analysis
+plotBee_ClusAnnot.Fixed.data <- plotBee_ClusAnnot.Fixed.data%>%
+  # Neighbourhood is selected if logFC is larger then the cutoff (only for stimulated clusters)
+  # OR is present in the selected NBH of the unstimulated cluster
+  mutate(ToInclude = replace_na(ToInclude, FALSE))
+```
+
+#### Visualization of cutoffs and selected neighbourhoods
+
+```{r NBH_PlotBeeswarmWithCutoffs_8h_FIXED, fig.height=10, fig.width=10}
+shapeValues = c("TRUE" = 19, "FALSE" = 1)
+sizeValues = c("TRUE" = 1, "FALSE" = 0.5)
+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.Fixed.data%>%filter(Stimulation == "IFNgamma"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "IFNgamma")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.Fixed.data%>%filter(Stimulation == "ODN2006"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "ODN2006")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.Fixed.data%>%filter(Stimulation == "antiCD3CD28"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "Anti-CD3/CD28")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot.Fixed.data%>%filter(Stimulation == "MegaCD40L"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "MegaCD40L")+
+  plot_annotation("8h") & labs(x = "Original clusters") & ylim(-10,10)&
+  themeG &
+  theme(panel.grid.major.y = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                          linewidth = 1)) &  NoLegend()
+```
+
+#### Extraction of the cell IDs of interest based on the selected NBHs
+
+```{r ExtractionCellIDS_8h_FIXED, echo=FALSE}
+# Unstimulated
+# Selection of cells linked to the selected NBHs
+NBH_Selection_Unstim.Fixed.Cells<-sapply(as.numeric(NBH_Selection_Unstim.Fixed.Numbers),
+                                   FUN = function(nhood){nhoods(milo.B_8h.FilClus$milo_graph)@Dimnames[[1]][nhoods(
+                                     milo.B_8h.FilClus$milo_graph)[,nhood]==1]})%>%
+                                       unlist()%>%
+                                       unique()
+
+# Selection of the Nhoods of interest only linked to a stimulation
+NBH_Selection.Fixed.Nhoods<-plotBee_ClusAnnot.Fixed.data%>%
+  filter(ToInclude)%>%
+  select(Nhood, Stimulation)
+# Selection of cellIDS
+for (nhood in unique(NBH_Selection.Fixed.Nhoods$Nhood)){
+  if (nhood %in% NBH_Selection_Unstim.Fixed.Numbers){
+    # Keep track of unstimulated Nhoods as well
+    Condition <- "Unstimulated"
+  } else {
+    Condition <- "Stimulated"
+  }
+  ExtractedCells.tmp <- data.frame(Nhood = nhood,
+                                   CellID = nhoods(milo.B_8h.FilClus$milo_graph)@Dimnames[[1]][nhoods(
+                                     milo.B_8h.FilClus$milo_graph)[,nhood]==1],
+                                   Condition = Condition)
+  if (!exists("NBH_Selection.Fixed.Cells") || (dim(NBH_Selection.Fixed.Cells)[1]) == 0){
+    message("Creating dataframe")
+    NBH_Selection.Fixed.Cells <- ExtractedCells.tmp
+  } else {
+    message("\nJoining additional cells")
+    NBH_Selection.Fixed.Cells <- rbind(NBH_Selection.Fixed.Cells,
+                                 ExtractedCells.tmp)
+  }
+  # Clean environment
+  rm(ExtractedCells.tmp)
+}
+
+# Joining the Nhood information to the Cell IDs
+NBH_Selection.Fixed.Cells <- left_join(NBH_Selection.Fixed.Cells,
+                                 NBH_Selection.Fixed.Nhoods,
+                                 by = "Nhood")
+# Annotate the cells that are overlapping with the unstimulated cells
+NBH_Selection.Fixed.Cells <- NBH_Selection.Fixed.Cells%>%
+  mutate(Condition = case_when(
+    CellID %in% NBH_Selection_Unstim.Fixed.Cells ~ "Unstimulated",
+    TRUE ~ "Stimulated"
+  ))
+```
+
+
+#### Save selection of cells
+```{r SaveSelectedCells_8h}
+# Create a blank workbook
+WorkBook <- createWorkbook()
+
+# Add some sheets to the workbook
+addWorksheet(WorkBook, "Nhoods_Sel")
+addWorksheet(WorkBook, "Cells_Sel")
+addWorksheet(WorkBook, "UnstimCells")
+addWorksheet(WorkBook, 'OverviewData')
+
+# Write the data to the sheets
+writeData(WorkBook, sheet = "Nhoods_Sel", 
+          x = NBH_Selection.Fixed.Nhoods)
+writeData(WorkBook, sheet = "Cells_Sel", 
+          x = NBH_Selection.Fixed.Cells)
+writeData(WorkBook, sheet = "UnstimCells",
+          x = NBH_Selection_Unstim.Fixed.Cells)
+writeData(WorkBook, sheet = "OverviewData",
+          x = plotBee_ClusAnnot.Fixed.data)
+
+# Export the file
+saveWorkbook(WorkBook, 
+             overwrite = T,
+             file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")))
+```
+
+```{r ReadInData_SelectionCells_Fixed_8h}
+NBH_Selection.Fixed.Nhoods <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "Nhoods_Sel")
+NBH_Selection.Fixed.Cells <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "Cells_Sel")
+NBH_Selection_Unstim.Fixed.Cells <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "UnstimCells")
+plotBee_ClusAnnot.Fixed.data <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "8h.xlsx", sep = "_")),
+                            sheet = "OverviewData")
+```
+
+#### Comparison to selection based on soft cut-offs
+
+```{r ComparisonCutOffs_8h}
+# For stimulated cells
+for(stim in unique(plotBee_ClusAnnot.data$Stimulation)){
+  # Prepare plotdata
+  CompPlotdata<-list("SOFT" = (plotBee_ClusAnnot.data%>%filter(Stimulation == stim,
+                                                               B_filtered_CCAInt_clusters != 0,
+                                                               ToInclude == TRUE))[["Nhood"]],
+                     "HARD" = (plotBee_ClusAnnot.Fixed.data%>%filter(Stimulation == stim,
+                                                               B_filtered_CCAInt_clusters != 0,
+                                                               ToInclude == TRUE))[["Nhood"]])
+  CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+  
+  # Plot upsetplot
+  print(UpSet(CompPlotdata,
+        comb_order = order(comb_size(CompPlotdata), decreasing = T),
+        top_annotation = HeatmapAnnotation(
+                  "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                     border = FALSE,
+                                                     gp = gpar(fill = "#595B5C",
+                                                               lty = "blank"),
+                                                     add_numbers = T,
+                                                     height = unit(4, "cm")),
+                  annotation_name_side = "left",
+                  annotation_name_rot = 90),
+        right_annotation = rowAnnotation(
+                  "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                            border = FALSE,
+                                            gp = gpar(fill = "#595B5C",
+                                                      lty = "blank"),
+                                            add_numbers = T,
+                                            width = unit(4, "cm"))),
+        row_title = stim))
+  rm(CompPlotdata)
+}
+
+# For unstimulated cells
+# Prepare plotdata
+CompPlotdata<-list("SOFT" = (plotBee_ClusAnnot.data%>%filter(Stimulation == stim,
+                                                             B_filtered_CCAInt_clusters == 0,
+                                                             ToInclude == TRUE))[["Nhood"]],
+                   "HARD" = (plotBee_ClusAnnot.Fixed.data%>%filter(Stimulation == stim,
+                                                             B_filtered_CCAInt_clusters == 0,
+                                                             ToInclude == TRUE))[["Nhood"]])
+CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+
+# Plot upsetplot
+print(UpSet(CompPlotdata,
+      comb_order = order(comb_size(CompPlotdata), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      row_title = "Unstimulated"))
+rm(CompPlotdata)
+```
+
+```{r ComparisonCutOffs_Cells_8h}
+# For stimulated cells
+for(stim in unique(NBH_Selection.Cells$Stimulation)){
+  # Prepare plotdata
+  CompPlotdata<-list("SOFT" = (NBH_Selection.Cells%>%filter(Stimulation == stim,
+                                                               Condition == "Stimulated"))[["CellID"]]%>%unique(),
+                     "HARD" = (NBH_Selection.Fixed.Cells%>%filter(Stimulation == stim,
+                                                               Condition == "Stimulated"))[["CellID"]]%>%unique())
+  CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+  
+  # Plot upsetplot
+  print(UpSet(CompPlotdata,
+        comb_order = order(comb_size(CompPlotdata), decreasing = T),
+        top_annotation = HeatmapAnnotation(
+                  "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                     border = FALSE,
+                                                     gp = gpar(fill = "#595B5C",
+                                                               lty = "blank"),
+                                                     add_numbers = T,
+                                                     height = unit(4, "cm")),
+                  annotation_name_side = "left",
+                  annotation_name_rot = 90),
+        right_annotation = rowAnnotation(
+                  "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                            border = FALSE,
+                                            gp = gpar(fill = "#595B5C",
+                                                      lty = "blank"),
+                                            add_numbers = T,
+                                            width = unit(4, "cm"))),
+        row_title = stim))
+  rm(CompPlotdata)
+}
+
+# For unstimulated cells
+# Prepare plotdata
+CompPlotdata<-list("SOFT" = (NBH_Selection.Cells%>%filter(Condition == "Unstimulated"))[["CellID"]]%>%unique(),
+                   "HARD" = (NBH_Selection.Fixed.Cells%>%filter(Condition == "Unstimulated"))[["CellID"]]%>%unique())
+CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+
+# Plot upsetplot
+print(UpSet(CompPlotdata,
+      comb_order = order(comb_size(CompPlotdata), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      row_title = "Unstimulated"))
+rm(CompPlotdata)
+```
+
+## 30 hours of stimulation
+
+### Data analysis using MiloR
+
+```{r MiloR_DAanalysis_30h}
+set.seed(2024)
+# Generation of the milo object and graph
+# Conform the vignette of MiloR
+milo.B_30h.FilClus<-MiloDA(object = IntData.B_30h.FilCus, assay = "RNA", k = 50, d = 20, prop = 0.15,
+                          # As recommended by Noah, perform KNN graph generation based on the dimensionality reduction technique
+                          # containing the most information
+                          RedDim = "B_filtered_CCAInt.rna", sampleID = "PatStim", 
+                          design = c("PatStim", "Stimulation"), overlap = 5)
+# Save the object for later use
+saveRDS(milo.B_30h.FilClus, 
+        file = file.path(params$path_Results, "MiloR",
+                         paste(params$prefix_output, "MiloRobject_FilteredB_30h.rds", sep = "_")))
+
+milo.B_30h.FilClus$size_histogram
+# Set k such that you have a minimum of Sx5 counts per nhood, where S=total number of samples
+
+# Statistical testing
+milo.B_30h.FilClus$milo_design$Stimulation <- milo.B_30h.FilClus$milo_design$Stimulation%>%
+  gsub(pattern = "CD3/CD28_beads", replacement = "antiCD3CD28")
+contrasts<-c("StimulationIFNgamma - StimulationUnstimulated", "StimulationMegaCD40L - StimulationUnstimulated", 
+             "StimulationantiCD3CD28 - StimulationUnstimulated", "StimulationODN2006 - StimulationUnstimulated")
+
+# Extract results of differential abundance analysis
+# Note: This part is a bit different from what is performed in 006_NoBase_visualization_doubletCheck_ClusterAnalysis_IntegrationV5.Rmd script
+DA.B_30h.FilClus<-testNhoods(x = milo.B_30h.FilClus$milo_graph, design = ~0+Stimulation, design.df = milo.B_30h.FilClus$milo_design,
+                            # Correct for multiple testing using a spatial FDR correction
+                            fdr.weighting = "graph-overlap", 
+                            model.contrasts = contrasts, reduced.dim = "B_filtered_CCAInt.rna"%>%toupper())
+
+# Rename the columns of the DA results
+names(DA.B_30h.FilClus)
+DA.B_30h.FilClus<- DA.B_30h.FilClus%>%
+  pivot_longer(cols = starts_with(("logFC")),
+               names_to = "Stimulation",
+               values_to = "logFC")%>%
+  mutate(Stimulation = gsub(pattern = "logFC.Stimulation", 
+                            replacement = "",
+                            x = Stimulation),
+         Stimulation = gsub(pattern = "...S.*", 
+                            replacement = "",
+                            x = Stimulation))
+``` 
+
+```{r ReadIn_MiloObjects_30h}
+milo.B_30h.FilClus<-readRDS(file = file.path(params$path_Results, "MiloR",
+                                            paste(params$prefix_output, "MiloRobject_FilteredB_30h.rds", sep = "_")))
+```
+
+### Neighbourhood graph plotting
+
+```{r MiloDA_BCells_Filtered_Visualisation_30h}
+# Visualization 
+# Generation of plots
+pIFN<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "IFNgamma"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = paste0("IFN","\U03B3","/R-848"))+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pCD40L<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "MegaCD40L"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "MegaCD40L")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pCD3CD28<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "antiCD3CD28"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "Anti-CD3/CD28")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pODN<-plotNhoodGraphDA(x = milo.B_30h.FilClus$milo_graph, alpha = 0.1,
+                   milo_res = DA.B_30h.FilClus%>%filter(Stimulation == "ODN2006"), layout = "B_filtered_CCAInt.umap.rna"%>%toupper(),
+                   size_range = c(0.01,1.5), node_stroke = 0.2)+
+    labs(subtitle = "ODN2006")+
+    guides(size=guide_legend("Size of Nhoods"), 
+           edge_width = guide_legend("Overlap Nhoods"), 
+           fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines"))))
+
+pUMAP<-DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna", group.by = "Stimulation",
+        pt.size = 0.001)+
+    scale_color_manual(values = colorsStim)+
+    labs(title=NULL, x = "UMAP1", y = "UMAP2", color = "Stimulation")+
+    theme(axis.line = element_blank(), axis.text = element_blank(),
+          axis.ticks = element_blank(), axis.title = element_blank())+
+    guides(color = guide_legend(override.aes = list(size=1))) 
+# Via patchwork, arranging of plots
+pUMAP + plot_spacer() + ( (pIFN + plot_spacer() + pODN + plot_layout(widths = c(1,0,1))) / 
+                            (pCD3CD28 + plot_spacer() + pCD40L + plot_layout(widths = c(1,0,1))))+
+  plot_layout(guides = "collect", widths = c(1,0,1)) & 
+  scale_fill_gradientn(limits = range(min(DA.B_30h.FilClus$logFC), max(DA.B_30h.FilClus$logFC)),
+                       colours = c("#8C2F39", "white", "#2D0650"),
+                       name = "LogFC") &
+  labs(size = "Size of Nhood") &
+  guides(fill = guide_colourbar("LogFC", theme = theme(legend.key.width  = unit(0.5, "lines")))) &
+  theme(plot.subtitle = element_text(size = 10, color = "gray30"),
+        legend.text =element_text(margin = margin(t = 1,l = 3), size = 8, color = "gray30"),
+        legend.title = element_text(size = 10, color = "gray30"),
+        plot.margin = margin(1,0,0,0)) &
+  theme(legend.key.size = unit(1, "lines"),
+        legend.spacing.y = unit(0.5, "lines"),
+        legend.spacing.x = unit(0.5, "lines"),
+        legend.margin = margin(1,0,0,1), 
+        legend.key.spacing = unit(0.3, "lines"))
+  
+ggsave(filename = file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$prefix_output, "DA_FilteredB_30h_RefUnstim.jpeg",
+                                  sep = "_")),
+       bg = "white", width = 25, height = 14, device = "jpeg", units = "cm",
+       dpi = 400)
+
+# Cleaning workspace
+rm(pIFN, pODN,pCD3CD28, pCD40L, pUMAP)
+```
+
+### Beeswarm plots based on original clusters
+
+```{r OriginalClustering_Nhoods_30h, fig.height=10, fig.width=10}
+# Annotation of the Nhoods per stimulation linking to the original clusters
+DA.B_30h.FilClus_ClustIFNG <- annotateNhoods(milo.B_30h.FilClus$milo_graph, 
+                                            # Only possible per stimulation
+                                            DA.B_30h.FilClus%>%
+                                              filter(Stimulation == "IFNgamma"), 
+                                            # Linking back to the clusters obtained after filtering and CCA integration
+                                            coldata_col = "B_filtered_CCAInt_clusters")
+# Convert to dataframe to use as input for the plotDAbeeswarm function
+DA.B_30h.FilClus_ClustIFNG <- as.data.frame(DA.B_30h.FilClus_ClustIFNG)
+
+# Check the outcome after Nhood annotation
+## Interesting: the fractions of linked clusters to the Nhoods is given as well
+head(DA.B_30h.FilClus_ClustIFNG)
+
+# Annotation of the Nhoods per stimulation linking to the original clusters
+plotBee_ClusAnnot_30h <- lapply(unique(DA.B_30h.FilClus$Stimulation),
+                                     FUN = function(layer){
+                                       # Annotation of the Nhoods per stimulation linking to the original clusters
+                                       DA.B_30h.FilClus_ClusAnnot.tmp <- annotateNhoods(milo.B_30h.FilClus$milo_graph,
+                                                                                       # Only possible per stimulation
+                                                                                      DA.B_30h.FilClus%>%
+                                                                                        filter(Stimulation == layer), 
+                                                                                      # Linking back to the clusters obtained after filtering and CCA integration
+                                                                                      coldata_col = "B_filtered_CCAInt_clusters")
+                                       # Highligh neighbourhoods that are a mix of clusters
+                                       DA.B_30h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters <- ifelse(
+                                         DA.B_30h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters_fraction < 0.7, "Mixed", 
+                                         DA.B_30h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters)
+                                       # Convert to dataframe to use as input for the plotDAbeeswarm function
+                                       DA.B_30h.FilClus_ClusAnnot.tmp <- as.data.frame(DA.B_30h.FilClus_ClusAnnot.tmp)%>%
+                                         # Ordering the clusters to visualize properly in the graph
+                                         mutate(B_filtered_CCAInt_clusters = factor(B_filtered_CCAInt_clusters,
+                                                                                    levels = unique(DA.B_30h.FilClus_ClusAnnot.tmp$B_filtered_CCAInt_clusters) %>%
+                                                                                      gtools::mixedsort(decreasing = T),
+                                                                                    ordered = T))
+                                       
+                                       # Check the outcome
+                                       head(DA.B_30h.FilClus_ClusAnnot.tmp)
+                                       return(list(plotDAbeeswarm(DA.B_30h.FilClus_ClusAnnot.tmp,
+                                                      group.by = "B_filtered_CCAInt_clusters", alpha = FDR_thres)+
+                                         themeG+
+                                         theme(panel.grid.major.y = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                                                                 linewidth = 1)),
+                                         DA.B_30h.FilClus_ClusAnnot.tmp))})
+# Change names of the list
+names(plotBee_ClusAnnot_30h) <- unique(DA.B_30h.FilClus$Stimulation)
+# Change names of the lists in the list, aka data and plot layer
+for (layer in names(plotBee_ClusAnnot_30h)){
+  names(plotBee_ClusAnnot_30h[[layer]])<-c("plot", "data")
+}
+
+# Plotting result
+(plotBee_ClusAnnot_30h$IFNgamma$plot+labs(subtitle = "IFN") + plotBee_ClusAnnot_30h$ODN2006$plot + labs(subtitle = "ODN2006")) /
+  (plotBee_ClusAnnot_30h$antiCD3CD28$plot + labs(subtitle = "anti-CD3/CD28") + plotBee_ClusAnnot_30h$MegaCD40L$plot +labs(subtitle = "CD40L"))+
+  plot_annotation("30h") & labs(x = "Original clusters") & ylim(-10,10)
+```
+
+### Selection of interesting neighbourhoods - soft cut-offs per stimulation
+
+#### Unstimulated neighbourhoods
+
+```{r NBH_Selection_30h_UnstimulatedCells}
+CutOff_Frac<-0.5
+# Join all data of the beesswarms over the stimulations
+plotBee_ClusAnnot_30h.data<-rbind(plotBee_ClusAnnot_30h$IFNgamma$data,
+                                  plotBee_ClusAnnot_30h$MegaCD40L$data,
+                                  plotBee_ClusAnnot_30h$antiCD3CD28$data,
+                                  plotBee_ClusAnnot_30h$ODN2006$data)
+
+### Unstimulated clusters/neighbourhood
+# Check minimum and maximum LogFC
+NBH_Selection_Unstim_30h.CutOffs <- plotBee_ClusAnnot_30h.data%>%
+  filter(B_filtered_CCAInt_clusters %in% c(2,4))%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = min(logFC)*(1-CutOff_Frac))
+
+NBH_Selection_Unstim_30h.CutOffs
+```
+
+
+```{r NBH_Overlap_Unstimulated}
+# Filtering based on the cutoffs
+NBH_Selection_Unstim_30h<-left_join(plotBee_ClusAnnot_30h.data,
+                                NBH_Selection_Unstim_30h.CutOffs%>%
+                                  select(Stimulation, B_filtered_CCAInt_clusters, CutOff))%>%
+  filter(B_filtered_CCAInt_clusters %in% c(2,4),
+         logFC < CutOff)
+
+# Prepare UpsetPlotData
+NBH_Selection_Unstim_30h.CombMat<-lapply(unique(NBH_Selection_Unstim_30h$Stimulation),
+                                     FUN = function(stim){(NBH_Selection_Unstim_30h%>%filter(Stimulation == stim))[["Nhood"]]})
+names(NBH_Selection_Unstim_30h.CombMat)<-unique(NBH_Selection_Unstim_30h$Stimulation)
+NBH_Selection_Unstim_30h.CombMat<-make_comb_mat(NBH_Selection_Unstim_30h.CombMat, mode = "distinct")
+# Plot upset plot
+UpSet(NBH_Selection_Unstim_30h.CombMat,
+      comb_order = order(comb_size(NBH_Selection_Unstim_30h.CombMat), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(NBH_Selection_Unstim_30h.CombMat),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(NBH_Selection_Unstim_30h.CombMat),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))))
+
+# Selected NBHs
+NBH_Selection_Unstim_30h.Numbers<-sapply(X = c("1110", "1111", "1011", "1101"),
+                                     FUN = function(set){extract_comb(NBH_Selection_Unstim_30h.CombMat, set)})%>%
+  unlist()
+length(NBH_Selection_Unstim_30h.Numbers)
+```
+
+#### Stimulated neighbourhoods
+
+```{r NBH_Selection_30h_Stimulations, fig.height=10, fig.width=10}
+### IFNgamma 
+# Number of clusters plotted in the Beeswarm plot
+NumClus_30h<-length(levels(plotBee_ClusAnnot_30h.data$B_filtered_CCAInt_clusters))
+# Obtain the cutoff values per cluster and per Stimulation
+# Only focusing on IFNgamma and ODN2006 stimulation
+NBH_Selection_IFNgamma_30h.CutOffs <- plotBee_ClusAnnot_30h.data%>%
+  filter(B_filtered_CCAInt_clusters %in% c(0, 1, 3, 7, 8, 9, 12, 14), 
+         Stimulation %in% c("IFNgamma"))%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = max(logFC)*(1-CutOff_Frac))%>%
+  mutate(positionHigh = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) + 0.5,
+         positionLow = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) - 0.5)
+# Check the obtained cutoffs
+NBH_Selection_IFNgamma_30h.CutOffs%>%
+  arrange(B_filtered_CCAInt_clusters)
+
+### ODN2006
+# Obtain the cutoff values per cluster and per Stimulation
+# Only focusing on IFNgamma and ODN2006 stimulation
+NBH_Selection_ODN2006_30h.CutOffs <- plotBee_ClusAnnot_30h.data%>%
+  filter(B_filtered_CCAInt_clusters %in% c(0, 1, 3, 5, 6, 7, 8, 10, 15), 
+         Stimulation %in% c("ODN2006"))%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = max(logFC)*(1-CutOff_Frac))%>%
+  mutate(positionHigh = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) + 0.5,
+         positionLow = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) - 0.5)
+# Check the obtained cutoffs
+NBH_Selection_ODN2006_30h.CutOffs%>%
+  arrange(B_filtered_CCAInt_clusters)
+
+### Anti-CD3/CD28
+# Obtain the cutoff values per cluster and per Stimulation
+# Only focusing on IFNgamma and ODN2006 stimulation
+NBH_Selection_CD3CD28_30h.CutOffs <- plotBee_ClusAnnot_30h.data%>%
+  filter(B_filtered_CCAInt_clusters %in% c(5, 6, 7, 11, 13), 
+         Stimulation %in% c("antiCD3CD28"))%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = max(logFC)*(1-CutOff_Frac))%>%
+  mutate(positionHigh = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) + 0.5,
+         positionLow = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) - 0.5)
+# Check the obtained cutoffs
+NBH_Selection_CD3CD28_30h.CutOffs%>%
+  arrange(B_filtered_CCAInt_clusters)
+
+### MegaCD40L
+# Obtain the cutoff values per cluster and per Stimulation
+# Only focusing on IFNgamma and ODN2006 stimulation
+NBH_Selection_MegaCD40L_30h.CutOffs <- plotBee_ClusAnnot_30h.data%>%
+  filter(B_filtered_CCAInt_clusters %in% c(6, 11), 
+         Stimulation %in% c("MegaCD40L"))%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(Min = min(logFC),
+            Max = max(logFC),
+            CutOff = max(logFC)*(1-CutOff_Frac))%>%
+  mutate(positionHigh = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) + 0.5,
+         positionLow = NumClus_30h - as.numeric(as.character(B_filtered_CCAInt_clusters)) - 0.5)
+# Check the obtained cutoffs
+NBH_Selection_MegaCD40L_30h.CutOffs%>%
+  arrange(B_filtered_CCAInt_clusters)
+```
+
+#### Merging of cut-off values and selected NBH indication
+
+
+```{r NBH_Selection_30h}
+NBH_Selection_30h.CutOffs<-rbind(NBH_Selection_Unstim_30h.CutOffs,
+                                 NBH_Selection_IFNgamma_30h.CutOffs,
+                                 NBH_Selection_ODN2006_30h.CutOffs,
+                                 NBH_Selection_MegaCD40L_30h.CutOffs,
+                                 NBH_Selection_CD3CD28_30h.CutOffs)
+
+# Add cutoffs to the data
+plotBee_ClusAnnot_30h.data <- left_join(plotBee_ClusAnnot_30h.data,
+                                    NBH_Selection_30h.CutOffs%>%
+                                      select(CutOff, Stimulation, B_filtered_CCAInt_clusters),
+                                    by = c("Stimulation", "B_filtered_CCAInt_clusters"))
+# Indicate which neighbourhoods to include in downstream analysis
+plotBee_ClusAnnot_30h.data <- plotBee_ClusAnnot_30h.data%>%
+  # Neighbourhood is selected if logFC is larger then the cutoff (only for stimulated clusters)
+  # OR is present in the selected NBH of the unstimulated cluster
+  mutate(ToInclude = (logFC > CutOff) | (Nhood %in% NBH_Selection_Unstim_30h.Numbers))%>%
+  mutate(ToInclude = replace_na(ToInclude, FALSE))
+```
+
+
+#### Visualization of cutoffs and selected neighbourhoods
+
+```{r NBH_PlotBeeswarmWithCutoffs_Arrows_30h, fig.height=10, fig.width=10}
+plotBee_ClusAnnot_30h$IFNgamma$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_IFNgamma_30h.CutOffs%>%
+                 filter(Stimulation == "IFNgamma"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_IFNgamma_30h.CutOffs%>%
+                 filter(Stimulation == "IFNgamma"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "npc")))+
+(plotBee_ClusAnnot_30h$ODN2006$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_ODN2006_30h.CutOffs%>%
+                 filter(Stimulation == "ODN2006"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_ODN2006_30h.CutOffs%>%
+                 filter(Stimulation == "ODN2006"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "npc"))))+
+(plotBee_ClusAnnot_30h$antiCD3CD28$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_CD3CD28_30h.CutOffs%>%
+                 filter(Stimulation == "antiCD3CD28"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_CD3CD28_30h.CutOffs%>%
+                 filter(Stimulation == "antiCD3CD28"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "npc"))))+
+(plotBee_ClusAnnot_30h$MegaCD40L$plot+
+  # add line segment
+  geom_segment(data = NBH_Selection_MegaCD40L_30h.CutOffs%>%
+                 filter(Stimulation == "MegaCD40L"),
+               mapping = aes(x = positionHigh, xend = positionLow,
+                             y = CutOff),
+               color = "black", linewidth = 1, alpha = 0.5)+
+  # add arrow next to the segment
+  geom_segment(data = NBH_Selection_MegaCD40L_30h.CutOffs%>%
+                 filter(Stimulation == "MegaCD40L"),
+               mapping = aes(x = positionLow, 
+                             y = CutOff, yend = CutOff+1),
+               color = "black", linewidth = 1, alpha=0.5, 
+               arrow = arrow(length = unit(0.03, "native"))))+
+  plot_annotation("30h") & labs(x = "Original clusters") & ylim(-10,10)
+```
+
+```{r NBH_PlotBeeswarmWithCutoffs_30h, fig.height=10, fig.width=10}
+shapeValues = c("TRUE" = 19, "FALSE" = 1)
+sizeValues = c("TRUE" = 1, "FALSE" = 0.5)
+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.data%>%filter(Stimulation == "IFNgamma"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "IFNgamma")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.data%>%filter(Stimulation == "ODN2006"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "ODN2006")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.data%>%filter(Stimulation == "antiCD3CD28"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "Anti-CD3/CD28")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.data%>%filter(Stimulation == "MegaCD40L"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "MegaCD40L")+
+  plot_annotation("30h") & labs(x = "Original clusters") & ylim(-10,10)&
+  themeG &
+  theme(panel.grid.major.y = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                          linewidth = 1)) & NoLegend()
+```
+
+```{r NBH_Retained_AbsoluteNumbers_30h}
+## Retained number of NBHs per cluster
+plotBee_ClusAnnot_30h.data%>%
+  group_by(Stimulation, B_filtered_CCAInt_clusters)%>%
+  summarise(RetainedNBH = sum(ToInclude))%>%
+  filter(RetainedNBH != 0)%>%
+  arrange(B_filtered_CCAInt_clusters)
+
+## Retained number of NBHs per Stimulation
+plotBee_ClusAnnot_30h.data%>%
+  filter(!B_filtered_CCAInt_clusters %in% c(2,4))%>%
+  group_by(Stimulation)%>%
+  summarise(Retained_StimNBH = sum(ToInclude))
+```
+
+#### Extraction of the cell IDs of interest based on the selected NBHs
+
+```{r ExtractionCellIDS_8h, echo=FALSE}
+# Unstimulated
+# Selection of cells linked to the selected NBHs
+NBH_Selection_Unstim_30h.Cells<-sapply(as.numeric(NBH_Selection_Unstim_30h.Numbers),
+                                   FUN = function(nhood)
+                                     {nhoods(milo.B_30h.FilClus$milo_graph)@Dimnames[[1]][nhoods(milo.B_30h.FilClus$milo_graph)[,nhood]==1]})%>%
+                                       unlist()%>%
+                                       unique()
+
+# Selection of the Nhoods of interest only linked to a stimulation
+NBH_Selection_30h.Nhoods<-plotBee_ClusAnnot_30h.data%>%
+  filter(ToInclude)%>%
+  select(Nhood, Stimulation)
+# Selection of cellIDS
+for (nhood in unique(NBH_Selection_30h.Nhoods$Nhood)){
+  if (nhood %in% NBH_Selection_Unstim_30h.Numbers){
+    # Keep track of unstimulated Nhoods as well
+    Condition <- "Unstimulated"
+  } else {
+    Condition <- "Stimulated"
+  }
+  ExtractedCells.tmp <- data.frame(Nhood = nhood,
+                                   CellID = nhoods(milo.B_30h.FilClus$milo_graph)@Dimnames[[1]][nhoods(milo.B_30h.FilClus$milo_graph)[,nhood]==1],
+                                   Condition = Condition)
+  if (!exists("NBH_Selection_30h.Cells") || (dim(NBH_Selection_30h.Cells)[1]) == 0){
+    message("Creating dataframe")
+    NBH_Selection_30h.Cells <- ExtractedCells.tmp
+  } else {
+    message("\nJoining additional cells")
+    NBH_Selection_30h.Cells <- rbind(NBH_Selection_30h.Cells,
+                                 ExtractedCells.tmp)
+  }
+  # Clean environment
+  rm(ExtractedCells.tmp)
+}
+
+
+# Joining the Nhood information to the Cell IDs
+NBH_Selection_30h.Cells <- left_join(NBH_Selection_30h.Cells,
+                                 NBH_Selection_30h.Nhoods,
+                                 by = "Nhood")
+# Annotate the cells that are overlapping with the unstimulated cells
+NBH_Selection_30h.Cells <- NBH_Selection_30h.Cells%>%
+  mutate(Condition = case_when(
+    CellID %in% NBH_Selection_Unstim_30h.Cells ~ "Unstimulated",
+    TRUE ~ "Stimulated"
+  ))
+```
+
+
+#### Save selection of cells
+```{r SaveSelectedCells_8h}
+# Create a blank workbook
+WorkBook <- createWorkbook()
+
+# Add some sheets to the workbook
+addWorksheet(WorkBook, "CutOffs")
+addWorksheet(WorkBook, "Nhoods_Sel")
+addWorksheet(WorkBook, "Cells_Sel")
+addWorksheet(WorkBook, "UnstimCells")
+addWorksheet(WorkBook, "OverviewData")
+
+# Write the data to the sheets
+writeData(WorkBook, sheet = "CutOffs", 
+          x = NBH_Selection_30h.CutOffs%>%
+            select(-positionHigh, -positionLow))
+writeData(WorkBook, sheet = "Nhoods_Sel", 
+          x = NBH_Selection_30h.Nhoods)
+writeData(WorkBook, sheet = "Cells_Sel", 
+          x = NBH_Selection_30h.Cells)
+writeData(WorkBook, sheet = "UnstimCells",
+          x = NBH_Selection_Unstim_30h.Cells)
+writeData(WorkBook, sheet = "OverviewData",
+          x = plotBee_ClusAnnot_30h.data)
+
+# Export the file
+saveWorkbook(WorkBook, 
+             # overwrite = T,
+             file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")))
+
+``` 
+
+```{r readInData_30h, eval=FALSE}
+NBH_Selection_30h.Nhoods<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "Nhoods_Sel")
+NBH_Selection_30h.Cells<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "Cells_Sel")
+NBH_Selection_Unstim_30h.Cells<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "UnstimCells")
+plotBee_ClusAnnot_30h.data<-read.xlsx(xlsxFile = file.path(params$path_Results,
+                                                         "MiloR",
+                                                         paste(params$date2, "CutOffs_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "OverviewData")
+```
+
+### Selection of interesting neighbourhoods - hard cutoff over stimulations
+
+#### Unstimulated neighbourhoods
+
+```{r NBH_Selection_30h_UnstimulatedCells_FIXED}
+# Define hard cutoff
+CutOff.Fixed<-3
+# Join all data of the beesswarms over the stimulations
+plotBee_ClusAnnot_30h.Fixed.data<-rbind(plotBee_ClusAnnot_30h$IFNgamma$data,
+                                        plotBee_ClusAnnot_30h$MegaCD40L$data,
+                                        plotBee_ClusAnnot_30h$antiCD3CD28$data,
+                                        plotBee_ClusAnnot_30h$ODN2006$data)
+```
+
+```{r NBH_Overlap_Unstimulated_30h_FIXED}
+# Filtering based on the cutoffs
+NBH_Selection_Unstim_30h.Fixed<-plotBee_ClusAnnot_30h.Fixed.data%>%
+  mutate(CutOff_Fixed = -CutOff.Fixed)%>%
+  filter(B_filtered_CCAInt_clusters %in% c(2,4),
+         logFC < CutOff_Fixed)
+
+# Prepare UpsetPlotData
+NBH_Selection_Unstim_30h.Fixed.CombMat<-lapply(unique(NBH_Selection_Unstim_30h.Fixed$Stimulation),
+                                           FUN = function(stim){(NBH_Selection_Unstim_30h.Fixed%>%filter(Stimulation == stim))[["Nhood"]]})
+names(NBH_Selection_Unstim_30h.Fixed.CombMat)<-unique(NBH_Selection_Unstim_30h.Fixed$Stimulation)
+NBH_Selection_Unstim_30h.Fixed.CombMat<-make_comb_mat(NBH_Selection_Unstim_30h.Fixed.CombMat, mode = "distinct")
+# Plot upset plot
+UpSet(NBH_Selection_Unstim_30h.Fixed.CombMat,
+      comb_order = order(comb_size(NBH_Selection_Unstim_30h.Fixed.CombMat), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(NBH_Selection_Unstim_30h.Fixed.CombMat),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(NBH_Selection_Unstim_30h.Fixed.CombMat),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))))
+
+# Selected NBHs - overlap in at least 3 of the stimulatory conditions
+NBH_Selection_Unstim_30h.Fixed.Numbers<-sapply(X = c("1110", "1111", "1011", "1101", "0111"),
+                                     FUN = function(set){extract_comb(NBH_Selection_Unstim_30h.Fixed.CombMat, set)})%>%
+  unlist()
+length(NBH_Selection_Unstim_30h.Fixed.Numbers)
+
+# Select the neighbourhoods based on the overlap
+NBH_Selection_Unstim_30h.Fixed<-NBH_Selection_Unstim_30h.Fixed%>%
+  mutate(ToInclude = case_when(
+    Nhood %in% NBH_Selection_Unstim_30h.Fixed.Numbers ~ TRUE,
+    TRUE ~ FALSE))
+```
+
+#### Stimulated neighbourhoods 
+
+```{r NBH_Selection_30h_Stimulations_FIXED, fig.height=10, fig.width=10}
+# Filtering based on the cutoffs
+NBH_Selection_Stim_30h.Fixed<-plotBee_ClusAnnot_30h.Fixed.data%>%
+  mutate(CutOff_Fixed = CutOff.Fixed)%>%
+  filter(!B_filtered_CCAInt_clusters %in% c(2,4),
+         logFC > CutOff_Fixed)
+
+# Indicate which NBHs to include
+NBH_Selection_Stim_30h.Fixed<-NBH_Selection_Stim_30h.Fixed%>%
+  mutate(ToInclude = case_when(
+    Stimulation == "IFNgamma" & B_filtered_CCAInt_clusters %in% c(0, 1, 3, 7, 8, 9, 12, 14) ~ TRUE,
+    Stimulation == "ODN2006" & B_filtered_CCAInt_clusters %in% c(0, 1, 3, 5, 6, 7, 8, 10, 12, 15)~ TRUE,
+    Stimulation == "antiCD3CD28" & B_filtered_CCAInt_clusters %in% c(0, 1, 3, 5, 6, 7, 9, 11, 13) ~ TRUE,
+    Stimulation == "MegaCD40L" & B_filtered_CCAInt_clusters %in% c(6, 11)~ TRUE,
+    TRUE ~ FALSE
+  ))
+
+# Check the number of retained neighbourhoods per stimulation and cluster
+table(NBH_Selection_Stim_30h.Fixed$Stimulation,
+      NBH_Selection_Stim_30h.Fixed$B_filtered_CCAInt_clusters)
+# Check the number of retained neighbourhoods per stimulation
+table(NBH_Selection_Stim_30h.Fixed$Stimulation,
+      NBH_Selection_Stim_30h.Fixed$ToInclude)
+```
+
+#### Merging of cut-off values and selected NBH indication
+
+
+```{r NBH_Selection_8h}
+NBH_Selection_30h.Fixed<-rbind(NBH_Selection_Unstim_30h.Fixed,
+                           NBH_Selection_Stim_30h.Fixed)
+
+# Add cutoffs to the data
+plotBee_ClusAnnot_30h.Fixed.data <- left_join(plotBee_ClusAnnot_30h.Fixed.data,
+                                    NBH_Selection_30h.Fixed%>%
+                                      select(CutOff_Fixed, Stimulation, Nhood, ToInclude),
+                                    by = c("Stimulation", "Nhood"))
+# Indicate which neighbourhoods to include in downstream analysis
+plotBee_ClusAnnot_30h.Fixed.data <- plotBee_ClusAnnot_30h.Fixed.data%>%
+  # Neighbourhood is selected if logFC is larger then the cutoff (only for stimulated clusters)
+  # OR is present in the selected NBH of the unstimulated cluster
+  mutate(ToInclude = replace_na(ToInclude, FALSE))
+```
+
+#### Visualization of cutoffs and selected neighbourhoods
+
+```{r NBH_PlotBeeswarmWithCutoffs_8h_FIXED, fig.height=10, fig.width=10}
+shapeValues = c("TRUE" = 19, "FALSE" = 1)
+sizeValues = c("TRUE" = 1, "FALSE" = 0.5)
+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.Fixed.data%>%filter(Stimulation == "IFNgamma"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "IFNgamma")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.Fixed.data%>%filter(Stimulation == "ODN2006"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "ODN2006")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.Fixed.data%>%filter(Stimulation == "antiCD3CD28"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "Anti-CD3/CD28")+
+plotDAbeeswarm_SubsetIndication(plotBee_ClusAnnot_30h.Fixed.data%>%filter(Stimulation == "MegaCD40L"), 
+                                group.by  = "B_filtered_CCAInt_clusters", alpha = FDR_thres, ToInclude = "ToInclude",
+                                sizeValues = sizeValues, shapeValues = shapeValues)+
+  labs(subtitle = "MegaCD40L")+
+  plot_annotation("8h") & labs(x = "Original clusters") & ylim(-10,10)&
+  themeG &
+  theme(panel.grid.major.y = element_line(color = adjustcolor( "lightgrey", alpha.f = 0.1),
+                                          linewidth = 1)) &  NoLegend()
+```
+
+#### Extraction of the cell IDs of interest based on the selected NBHs
+
+```{r ExtractionCellIDS_30h_FIXED, echo=FALSE}
+# Unstimulated
+# Selection of cells linked to the selected NBHs
+NBH_Selection_Unstim_30h.Fixed.Cells<-sapply(as.numeric(NBH_Selection_Unstim_30h.Fixed.Numbers),
+                                   FUN = function(nhood){nhoods(milo.B_30h.FilClus$milo_graph)@Dimnames[[1]][nhoods(
+                                     milo.B_30h.FilClus$milo_graph)[,nhood]==1]})%>%
+                                       unlist()%>%
+                                       unique()
+
+# Selection of the Nhoods of interest only linked to a stimulation
+NBH_Selection_30h.Fixed.Nhoods<-plotBee_ClusAnnot_30h.Fixed.data%>%
+  filter(ToInclude)%>%
+  select(Nhood, Stimulation)
+# Selection of cellIDS
+for (nhood in unique(NBH_Selection_30h.Fixed.Nhoods$Nhood)){
+  if (nhood %in% NBH_Selection_Unstim_30h.Fixed.Numbers){
+    # Keep track of unstimulated Nhoods as well
+    Condition <- "Unstimulated"
+  } else {
+    Condition <- "Stimulated"
+  }
+  ExtractedCells.tmp <- data.frame(Nhood = nhood,
+                                   CellID = nhoods(milo.B_30h.FilClus$milo_graph)@Dimnames[[1]][nhoods(
+                                     milo.B_30h.FilClus$milo_graph)[,nhood]==1],
+                                   Condition = Condition)
+  if (!exists("NBH_Selection_30h.Fixed.Cells") || (dim(NBH_Selection_30h.Fixed.Cells)[1]) == 0){
+    message("Creating dataframe")
+    NBH_Selection_30h.Fixed.Cells <- ExtractedCells.tmp
+  } else {
+    message("\nJoining additional cells")
+    NBH_Selection_30h.Fixed.Cells <- rbind(NBH_Selection_30h.Fixed.Cells,
+                                 ExtractedCells.tmp)
+  }
+  # Clean environment
+  rm(ExtractedCells.tmp)
+}
+
+# Joining the Nhood information to the Cell IDs
+NBH_Selection_30h.Fixed.Cells <- left_join(NBH_Selection_30h.Fixed.Cells,
+                                 NBH_Selection_30h.Fixed.Nhoods,
+                                 by = "Nhood")
+# Annotate the cells that are overlapping with the unstimulated cells
+NBH_Selection_30h.Fixed.Cells <- NBH_Selection_30h.Fixed.Cells%>%
+  mutate(Condition = case_when(
+    CellID %in% NBH_Selection_Unstim_30h.Fixed.Cells ~ "Unstimulated",
+    TRUE ~ "Stimulated"
+  ))
+```
+
+#### Save selection of cells
+```{r SaveSelectedCells_8h}
+# Create a blank workbook
+WorkBook <- createWorkbook()
+
+# Add some sheets to the workbook
+addWorksheet(WorkBook, "Nhoods_Sel")
+addWorksheet(WorkBook, "Cells_Sel")
+addWorksheet(WorkBook, "UnstimCells")
+addWorksheet(WorkBook, 'OverviewData')
+
+# Write the data to the sheets
+writeData(WorkBook, sheet = "Nhoods_Sel", 
+          x = NBH_Selection_30h.Fixed.Nhoods)
+writeData(WorkBook, sheet = "Cells_Sel", 
+          x = NBH_Selection_30h.Fixed.Cells)
+writeData(WorkBook, sheet = "UnstimCells",
+          x = NBH_Selection_Unstim_30h.Fixed.Cells)
+writeData(WorkBook, sheet = "OverviewData",
+          x = plotBee_ClusAnnot_30h.Fixed.data)
+
+# Export the file
+saveWorkbook(WorkBook, 
+             overwrite = T,
+             file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")))
+```
+
+```{r ReadInData_SelectionCells_Fixed_8h}
+NBH_Selection_30h.Fixed.Nhoods <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "Nhoods_Sel")
+NBH_Selection_30h.Fixed.Cells <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "Cells_Sel")
+NBH_Selection_Unstim_30h.Fixed.Cells <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "UnstimCells")
+plotBee_ClusAnnot_30h.Fixed.data <- read.xlsx(file.path(params$path_Results,
+                            "MiloR",
+                            paste(params$date3, "HardCutOff3_Selection_Nhoods_Cells", "30h.xlsx", sep = "_")),
+                            sheet = "OverviewData")
+```
+
+#### Comparison to selection based on soft cut-offs
+
+```{r ComparisonCutOffs_30h}
+# For stimulated cells
+for(stim in unique(plotBee_ClusAnnot_30h.data$Stimulation)){
+  # Prepare plotdata
+  CompPlotdata<-list("SOFT" = (plotBee_ClusAnnot_30h.data%>%filter(Stimulation == stim,
+                                                               !B_filtered_CCAInt_clusters %in% c(2,4),
+                                                               ToInclude == TRUE))[["Nhood"]],
+                     "HARD" = (plotBee_ClusAnnot_30h.Fixed.data%>%filter(Stimulation == stim,
+                                                               !B_filtered_CCAInt_clusters %in% c(2,4),
+                                                               ToInclude == TRUE))[["Nhood"]])
+  CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+  
+  # Plot upsetplot
+  print(UpSet(CompPlotdata,
+        comb_order = order(comb_size(CompPlotdata), decreasing = T),
+        top_annotation = HeatmapAnnotation(
+                  "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                     border = FALSE,
+                                                     gp = gpar(fill = "#595B5C",
+                                                               lty = "blank"),
+                                                     add_numbers = T,
+                                                     height = unit(4, "cm")),
+                  annotation_name_side = "left",
+                  annotation_name_rot = 90),
+        right_annotation = rowAnnotation(
+                  "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                            border = FALSE,
+                                            gp = gpar(fill = "#595B5C",
+                                                      lty = "blank"),
+                                            add_numbers = T,
+                                            width = unit(4, "cm"))),
+        row_title = stim))
+  rm(CompPlotdata)
+}
+
+# For unstimulated cells
+# Prepare plotdata
+CompPlotdata<-list("SOFT" = (plotBee_ClusAnnot_30h.data%>%filter(Stimulation == stim,
+                                                             B_filtered_CCAInt_clusters %in% c(2,4),
+                                                             ToInclude == TRUE))[["Nhood"]],
+                   "HARD" = (plotBee_ClusAnnot_30h.Fixed.data%>%filter(Stimulation == stim,
+                                                             B_filtered_CCAInt_clusters %in% c(2,4),
+                                                             ToInclude == TRUE))[["Nhood"]])
+CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+
+# Plot upsetplot
+print(UpSet(CompPlotdata,
+      comb_order = order(comb_size(CompPlotdata), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      row_title = "Unstimulated"))
+rm(CompPlotdata)
+```
+
+```{r ComparisonCutOffs_Cells_30h}
+# For stimulated cells
+for(stim in unique(NBH_Selection_30h.Cells$Stimulation)){
+  # Prepare plotdata
+  CompPlotdata<-list("SOFT" = (NBH_Selection_30h.Cells%>%filter(Stimulation == stim,
+                                                               Condition == "Stimulated"))[["CellID"]]%>%unique(),
+                     "HARD" = (NBH_Selection_30h.Fixed.Cells%>%filter(Stimulation == stim,
+                                                               Condition == "Stimulated"))[["CellID"]]%>%unique())
+  CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+  
+  # Plot upsetplot
+  print(UpSet(CompPlotdata,
+        comb_order = order(comb_size(CompPlotdata), decreasing = T),
+        top_annotation = HeatmapAnnotation(
+                  "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                     border = FALSE,
+                                                     gp = gpar(fill = "#595B5C",
+                                                               lty = "blank"),
+                                                     add_numbers = T,
+                                                     height = unit(4, "cm")),
+                  annotation_name_side = "left",
+                  annotation_name_rot = 90),
+        right_annotation = rowAnnotation(
+                  "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                            border = FALSE,
+                                            gp = gpar(fill = "#595B5C",
+                                                      lty = "blank"),
+                                            add_numbers = T,
+                                            width = unit(4, "cm"))),
+        row_title = stim))
+  rm(CompPlotdata)
+}
+
+# For unstimulated cells
+# Prepare plotdata
+CompPlotdata<-list("SOFT" = (NBH_Selection_30h.Cells%>%filter(Condition == "Unstimulated"))[["CellID"]]%>%unique(),
+                   "HARD" = (NBH_Selection_30h.Fixed.Cells%>%filter(Condition == "Unstimulated"))[["CellID"]]%>%unique())
+CompPlotdata<-make_comb_mat(CompPlotdata, mode = "distinct")
+
+# Plot upsetplot
+print(UpSet(CompPlotdata,
+      comb_order = order(comb_size(CompPlotdata), decreasing = T),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(CompPlotdata),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90),
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(CompPlotdata),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"),
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      row_title = "Unstimulated"))
+rm(CompPlotdata)
+```
+
