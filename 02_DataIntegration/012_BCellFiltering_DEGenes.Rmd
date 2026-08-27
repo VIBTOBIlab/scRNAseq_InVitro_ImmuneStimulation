@@ -1,0 +1,2494 @@
+---
+title: "Filtering of B cells - Visualization - Differential gene expression"
+author: "Tine D'hamers"
+date: "2025-06-24"
+output: html_document
+params:
+  path_Results: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/002_NoBaseline/202506_Filtered_BCells"
+  SeuratObj_Bcells_8h: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/002_NoBaseline/SeuratObjects/seuratObj_NoBase_Integrated_BClusters_8h.rds"
+  SeuratObj_Bcells_30h: "/kyukon/scratch/gent/vo/002/gvo00224/TOBI/Projects/EProfile/Results/Exp_202211_HCSamples_CEV017-22/002_NoBaseline/SeuratObjects/seuratObj_NoBase_Integrated_BClusters_30h.rds"
+  date: "20250625"
+  date2: "20250731"
+---
+
+# Introduction
+
+In this RMarkdown file, multiple analysis steps were performed.
+
+1. The final B cell subset obtained in previous scripts (e.g. as loaded in `007_NoBase_DEGeneAnalysis.Rmd`) is filtered to remove the weird blubs on top of the UMAP for 8 hours of stimulation. A similar check was performed for the B cells obtained after 30 hours of incubation.
+2. The obtained filtered B cell subset was used for a final differential gene expression analysis
+
+Results were stored in appropriate files
+
+# Preparation
+
+## Library loading
+
+```{r Libraries}
+.libPaths("/kyukon/data/gent/vo/000/gvo00027/SingleCell10X/seuratintegrate/Rpackages/R_4.2.1-foss-2022a/")
+# Single cell data manipulation
+library(Seurat)
+# General data manipulation
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(xlsx)
+library(openxlsx)
+# Plot generation
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(ggh4x)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(circlize)
+library(ggridges)
+library(patchwork)
+# Additional analysis
+library(clustree)
+# Gene set enrichment
+library(msigdbr)
+# NCBI scraping
+library(rentrez)
+``` 
+
+## Aesthetics and function loading
+
+```{r Aesthetics}
+# Themes
+source("../../PlotThemes_sc_CVID.R")
+colorsStim<-c(colorsStim, c("CD3/CD28" = colorsStim[["CD3/CD28_beads"]]))
+
+options(bitmapType='cairo')
+
+source("../../Functions_sc_CVID.R")
+
+# Coloring for the DE genes
+colDirection<-c("DOWN" = "darkred",
+                "UP" = "darkgreen",
+                "MIXED" = "#D5BBB1",
+                "NS" = "grey80")
+grid.grey = "grey95"
+```
+
+## Dataset loading
+
+```{r LoadingData}
+# Seurat objects B cells
+IntData.B_8h<-readRDS(params$SeuratObj_Bcells_8h)
+IntData.B_30h<-readRDS(params$SeuratObj_Bcells_30h)
+```
+
+# Visualization of B cell subsets
+
+First, the original B cell dataset is visualized for both 8 and 30 hours of stimulation.
+
+```{r UMAP_Visualization_PreFiltering, fig.width=20, fig.height=6}
+DimPlot(object = IntData.B_8h,
+        reduction = "B_integrated.umap.rna",
+        group.by = "B_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) + 
+  (DimPlot(object = IntData.B_8h,
+        reduction = "B_integrated.umap.rna",
+        group.by = "predicted.celltype.l1",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Cell types predictions")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) +
+  scale_color_manual(values = colorsCellType)) +
+     (DimPlot(object = IntData.B_8h,
+        reduction = "B_integrated.umap.rna",
+        group.by = "predicted.celltype.l2",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Cell types predictions")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()))
+
+DimPlot(object = IntData.B_30h,
+        reduction = "B_integrated.umap.rna",
+        group.by = "B_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+   (DimPlot(object = IntData.B_30h,
+        reduction = "B_integrated.umap.rna",
+        group.by = "predicted.celltype.l1",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Cell types predictions")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) +
+  scale_color_manual(values = colorsCellType)) +
+   (DimPlot(object = IntData.B_30h,
+        reduction = "B_integrated.umap.rna",
+        group.by = "predicted.celltype.l2",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Cell types predictions")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()))
+```
+
+# Filtering of the confusing clusters
+
+## 8 hours of stimulation
+
+For the B cell subset obtained after 8 hours of stimulation, a confusing blub mainly overlapping with **cluster 17** was removed. Next, the plasmablast cells (**cluster 21**) were removed as well since this a really small cluster in this B cell subset. Furthermore, an additional dimensionality reduction step, generating a new UMAP, was performed. This is the final B cell subset that was used for all the downstream analysis steps.
+
+```{r Filtering_UMAPGeneration_8h, fig.width=6, fig.height=4}
+# Change idents needed in the subset function
+Idents(IntData.B_8h) <- "B_clusters"
+# Subsetting the data
+IntData.B_8h.FilCus <- subset(IntData.B_8h,
+                              # Only extract the clusters without cluster 17 and 22
+                              idents = unique(levels(IntData.B_8h$B_clusters))[!unique(levels(IntData.B_8h$B_clusters)) %in% c("17", "22")])
+# Visualization to check if clusters were proberly removed
+DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_integrated.umap.rna",
+        group.by = "B_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())
+```
+
+
+### Dimensionality reduction without data integration
+
+In a first step, dimensionality reduction was performe in the standard way, without taking into account any integration of the data. This is performed by generating PC of interest and clustering based on these PCs. Next, a UMAP was generated using the most interesting PCs (using an albow plot to decide on this number).
+
+```{r DimRed_NoIntegration, fig.width=15, fig.height=4}
+# Generation of new UMAP 
+## Run PCA analysis for dimensionality reduction
+IntData.B_8h.FilCus <- Seurat::RunPCA(object = IntData.B_8h.FilCus,
+                                      # Based on RNA only
+                                      assay = "RNA",
+                                      # Name to save
+                                      reduction.name = "B_filtered.pca")
+## Check interesting number of dimensions in pca dimensionality reduction
+ElbowPlot(IntData.B_8h.FilCus, ndims = 50, reduction = "B_filtered.pca")
+
+## Generation of clusters
+IntData.B_8h.FilCus <- FindNeighbors(IntData.B_8h.FilCus, 
+                                reduction = "B_filtered.pca", 
+                                dims = 1:30, graph.name = "B_filtered")
+### Clustering using multiple resolution values
+for (val_res in seq(0.5,2.5, by=0.5)){
+  ResVal<-paste0("B_filtered_res_", val_res)
+  message(paste0("Busy working on clustering with resolution ", val_res))
+  IntData.B_8h.FilCus<-FindClusters(IntData.B_8h.FilCus,
+                                    resolution=val_res,
+                        verbose = FALSE, cluster.name = ResVal,
+                        graph.name = "B_filtered")}
+# Clustree to check the select the appropriate resolution
+clustree(IntData.B_8h.FilCus, 
+         # Select only the correct clusters based on the resolution
+         prefix = "B_filtered_res_",
+         # Size of the nodes
+         node_size = 6,
+         # Edges cross as little a possible
+         layout = "sugiyama",
+         # Coloring the nodes based on fraction of T cells
+         # Per cluster 
+         node_colour = "lightblue",
+         show_axis = TRUE)+
+  scale_color_gradient(low = "lightgrey",
+                       high = "#A00D0D")+
+  scale_edge_color_continuous(low = "lightgrey",
+                             high = "#690F82")+
+  labs(edge_alpha = "Proportion moved cells",
+       edge_colour = "Counts moved cells",
+       colour = "B cell fraction",
+       title = "B filtered clusters",
+       subtitle = "RNA")+
+  ylab("Resolution")+
+  theme_clustree
+
+## Resolution of 1.5 seems okay 
+## Better to overcluster, merging clusters is possible if necessary
+Res_Method<-c("Resolution" = 1.5)
+Res_Method[]<-paste0("B_filtered_res_",Res_Method)
+IntData.B_8h.FilCus<-SelectMetaData(object = IntData.B_8h.FilCus,
+                               to_stay = c("B_filtered_clusters" = Res_Method[["Resolution"]]),
+                               pattern_remove = "B_filtered_res_")
+
+## RUN UMAP dimensionality reduction based on the previous PCA analysis
+IntData.B_8h.FilCus <- RunUMAP(IntData.B_8h.FilCus, 
+                    reduction = "B_filtered.pca", 
+                    # Focus on the first 30 PC based on the elbow plot generated above
+                    dims = 1:30, reduction.name = "B_filtered.umap")
+
+# Visualization of the final UMAP and its clusters
+DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "B_filtered_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) + 
+  (DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "Stimulation",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  scale_color_manual(values = colorsStim))+
+  (DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "predicted.celltype.l1",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+     scale_color_manual(values = colorsCellType))
+
+# Save the plot
+ggsave(filename = file.path(params$path_Results, paste0(params$date, 
+                                                        "_FilteredB_8h_UMAP_clusters_stimulations_annotation.pdf")),
+       device = "pdf", height = 4, width = 15,
+       dpi = 330)
+```
+
+```{r DensityPlots_Stimulations_8h, fig.height=10, fig.width=12}
+Idents(IntData.B_8h.FilCus)<-'Stimulation'
+# Initialization of list for plots
+Dens.plotlist <- list()
+# Generate the density plots and save them in the list
+for (stim in unique(IntData.B_8h.FilCus$Stimulation)){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_8h.FilCus, reduction = "B_filtered.umap",
+                                 group.by = "Stimulation", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_8h.FilCus, idents = stim)@reductions[["B_filtered.umap"]]@cell.embeddings,
+                   mapping = aes(x = Bfilteredumap_1,
+                                 y = Bfilteredumap_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+    ylim(-7,7)+
+    xlim(-8,8)
+}
+
+# Join plots
+ggarrange(plotlist = Dens.plotlist, ncol = 3, nrow = 2)
+# Save plot
+ggsave(filename = file.path(params$path_Results, paste0(params$date, 
+                                                        "_FilteredB_8h_UMAP_density_stimulations.pdf")),
+       device = "pdf", height = 10, width = 12,
+       dpi = 330)
+
+# Clean
+rm(Dens.plotlist)
+```
+
+### Dimensionality reduction with data integration - CCA
+
+In this part, the filtered B cell subset is first integrated using the CCA approach. Additionally, clusters are generated and a UMAP dimensionality reduction is performed for downstream visualization.
+
+```{r DimRed_CCAintegration, fig.width=15, fig.height=4}
+#### INTEGRATION ####
+# Set the default assay to RNA
+DefaultAssay(IntData.B_8h.FilCus) <- "RNA"
+
+# Split the data according the sampleID (batch effects)
+IntData.B_8h.FilCus[["RNA"]]<-split(IntData.B_8h.FilCus[["RNA"]],
+                                    IntData.B_8h$samplename)
+# Normalization
+IntData.B_8h.FilCus<-Seurat::NormalizeData(IntData.B_8h.FilCus)
+# Variable Features
+IntData.B_8h.FilCus<-Seurat::FindVariableFeatures(IntData.B_8h.FilCus)
+# Scaling
+IntData.B_8h.FilCus<-Seurat::ScaleData(IntData.B_8h.FilCus, 
+                                       features = rownames(IntData.B_8h.FilCus))
+# Dimensionality reduction (unintegrated)
+IntData.B_8h.FilCus<-Seurat::RunPCA(IntData.B_8h.FilCus, assay = "RNA", 
+                                    reduction.name = "B_filtered_pca.priorIntegration.rna")
+IntData.B_8h.FilCus<-Seurat::FindNeighbors(IntData.B_8h.FilCus, dims = 1:20, 
+                                           reduction = "B_filtered_pca.priorIntegration.rna")
+IntData.B_8h.FilCus<-Seurat::FindClusters(IntData.B_8h.FilCus, resolution = 2, 
+                                          cluster.name = "B_filtered_pca_clusters.priorIntegration.rna")
+IntData.B_8h.FilCus<-Seurat::RunUMAP(IntData.B_8h.FilCus, dims = 1:20, reduction = "B_filtered_pca.priorIntegration.rna", 
+                           reduction.name = "B_filtered_umap.priorIntegration.rna")
+# CCA integration of RNA layer
+IntData.B_8h.FilCus<-IntegrateLayers(IntData.B_8h.FilCus, method = CCAIntegration,
+                           orig.reduction = "B_filtered_pca.priorIntegration.rna", 
+                           new.reduction = "B_filtered_CCAInt.rna",
+                           verbose = F)
+
+# Joining layers
+IntData.B_8h.FilCus[["RNA"]] <- JoinLayers(IntData.B_8h.FilCus[["RNA"]])
+
+#### CLUSTERING ####
+# Clustering based on the integrated data
+IntData.B_8h.FilCus <- FindNeighbors(IntData.B_8h.FilCus, 
+                           reduction = "B_filtered_CCAInt.rna", 
+                           dims = 1:30, graph.name = "B_filtered_CCAInt.rna_graph")
+# Clustering using multiple resolution values
+for (val_res in seq(0.5,2.5, by=0.5)){
+  ResVal<-paste0("B_filtered_CCAInt_clusters_res_", val_res)
+  message(paste0("Busy working on B cell clustering with resolution ", val_res))
+  IntData.B_8h.FilCus<-FindClusters(IntData.B_8h.FilCus,resolution=val_res,
+                          verbose = FALSE, cluster.name = ResVal,
+                          graph.name = "B_filtered_CCAInt.rna_graph")}
+# Clustree to check the select the appropriate resolution
+clustree(IntData.B_8h.FilCus, 
+         # Select only the correct clusters based on the resolution
+         prefix = "B_filtered_CCAInt_clusters_res_",
+         # Size of the nodes
+         node_size = 6,
+         # Edges cross as little a possible
+         layout = "sugiyama",
+         # Coloring the nodes based on fraction of B cells
+         # Per cluster 
+         node_colour = "lightblue",
+         show_axis = TRUE)+
+  scale_color_gradient(low = "lightgrey",
+                       high = "#A00D0D")+
+  scale_edge_color_continuous(low = "lightgrey",
+                              high = "#690F82")+
+  labs(edge_alpha = "Proportion moved cells",
+       edge_colour = "Counts moved cells",
+       colour = "B cell fraction",
+       title = "Singlets B cells",
+       subtitle = "RNA")+
+  ylab("Resolution")+
+  theme_clustree
+
+# Resolution of 1.5 seems okay 
+# Better to overcluster, merging clusters is possible if necessary
+Res_Method<-c("Resolution" = 1.5)
+Res_Method[]<-paste0("B_filtered_CCAInt_clusters_res_",Res_Method)
+
+IntData.B_8h.FilCus<-SelectMetaData(object = IntData.B_8h.FilCus,
+                          to_stay = c("B_filtered_CCAInt_clusters" = Res_Method[["Resolution"]]),
+                          pattern_remove = "B_filtered_CCAInt_clusters_res_")
+
+IntData.B_8h.FilCus <- RunUMAP(IntData.B_8h.FilCus,
+                               reduction = "B_filtered_CCAInt.rna",
+                               dims = 1:30, reduction.name = "B_filtered_CCAInt.umap.rna")
+
+# Visualization of integrated data + clusters
+DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "B_filtered_CCAInt_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) + 
+  (DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "Stimulation",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Stimulation")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  scale_color_manual(values = colorsStim))+
+  (DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "predicted.celltype.l1",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Cell type prediction Azimuth")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+     scale_color_manual(values = colorsCellType)) + 
+  plot_annotation(title = "CCA integrated")
+```
+
+```{r DensityPlots_Stimulations_8h, fig.height=7, fig.width=12}
+Idents(IntData.B_8h.FilCus)<-'Stimulation'
+# Initialization of list for plots
+Dens.plotlist <- list()
+# Generate the density plots and save them in the list
+for (stim in unique(IntData.B_8h.FilCus$Stimulation)){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_8h.FilCus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "Stimulation", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_8h.FilCus, idents = stim)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+    ylim(-7,7)+
+    xlim(-8,8)
+}
+
+# Join plots
+ggarrange(plotlist = Dens.plotlist, ncol = 3, nrow = 2)
+# Save plot
+ggsave(filename = file.path(params$path_Results, paste0(params$date, 
+                                                        "_FilteredB_8h_CCAint_UMAP_density_stimulations.pdf")),
+       device = "pdf", height = 9, width = 12,
+       dpi = 330)
+
+# Clean
+rm(Dens.plotlist)
+```
+
+### Comparison with or without integration
+
+```{r ComparisonIntegration_DimPlot, fig.height=3, fig.width=8}
+#### DIMPLOTs ####
+DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "samplename",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "CCA integration")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) +
+  scale_color_manual(values = colorsSample) + 
+  (DimPlot(object = IntData.B_8h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "samplename",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Without integration")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) +
+  scale_color_manual(values = colorsSample))
+```
+
+```{r ComparisonIntegration_DensityPlots, fig.height=7, fig.width=6}
+### DENSITY PLOTS ###
+Idents(IntData.B_8h.FilCus)<-'samplename'
+# Initialization of list for plots
+Dens.plotlist <- list()
+# Generate the density plots and save them in the list
+for (pool in unique(IntData.B_8h.FilCus$samplename)){
+  Dens.plotlist[[paste0("CCAInt - ", pool)]] <- DimPlot(IntData.B_8h.FilCus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "samplename", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_8h.FilCus, idents = pool)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = paste0("CCAInt - ", pool), x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5))+
+    ylim(-7,7)+
+    xlim(-8,8)
+  
+  Dens.plotlist[[paste0("No Integration - ", pool)]] <- DimPlot(IntData.B_8h.FilCus, reduction = "B_filtered.umap",
+                                 group.by = "samplename", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_8h.FilCus, idents = pool)@reductions[["B_filtered.umap"]]@cell.embeddings,
+                   mapping = aes(x = Bfilteredumap_1,
+                                 y = Bfilteredumap_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = paste0("No Integration - ", pool), x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5))+
+    ylim(-7,7)+
+    xlim(-8,8)
+}
+
+# Join plots
+ggarrange(plotlist = Dens.plotlist, ncol = 2, nrow = 3)
+
+# Clean
+rm(Dens.plotlist)
+```
+
+## 30 hours of stimulation
+
+For the B cell subset obtained after 30 hours of stimulation, multiple confusing blubs were observed. However, most of them indeed contained B cells and were retained in the end. 
+
+- **Cluster 24**: This cluster contained plasmablasts and was therefor removed from this B cell subset.
+- **Cluster 12**: This cluster contained a long "line" of cells, not really clustering together, and also mainly contained CD4+ T cells.
+- **Cluster 19**: This cluster showed high percentages of mitochondrial DNA and was therefore also excluded (see below).
+- **Cluster 20** also seemed outliers, but no large reasons could be found (based on annotation and feature plots of the most interestin markers). No bias to any of the samples, conditions or sample pools was observed. Therefore this cluster was retained for downstream analysis. But it also clearly again cluster apart from the other cells when performing the PCA and UMAP analysis again. _Note: I tried with leaving out these clusters separately as well, however this did not improve the findings._
+
+```{r QualityControl_30hClusters, fig.height=10, fig.width=10}
+# Change the Idents of the data to the metadata column of interest
+Idents(IntData.B_30h)<-"B_clusters"
+# Check some quality features
+VlnPlot(object = IntData.B_30h, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent_mito"),
+        alpha = 0.2, sort = "decreasing",
+        ncol = 1)
+
+# Check doublets
+VlnPlot(object = IntData.B_30h, 
+        features = c("scDblFinder.score", "predicted.celltype.l1.score"),
+        alpha = 0.2, sort = "decreasing",
+        ncol = 1)
+
+# Check specifity for pools or samples
+Heatmap(t(as.matrix(table(IntData.B_30h$B_clusters, 
+                          IntData.B_30h$samplename))/colSums(as.matrix(table(IntData.B_30h$samplename, 
+                                                                             IntData.B_30h$B_clusters)))), 
+          name = "Sample pools")
+Heatmap(t(as.matrix(table(IntData.B_30h$B_clusters, 
+                          IntData.B_30h$PatientID))/colSums(as.matrix(table(IntData.B_30h$PatientID, 
+                                                                             IntData.B_30h$B_clusters)))), name = "Healthy donors")
+Heatmap(t(as.matrix(table(IntData.B_30h$B_clusters, 
+                          IntData.B_30h$PatStim))/colSums(as.matrix(table(IntData.B_30h$PatStim, 
+                                                                             IntData.B_30h$B_clusters)))), name = "Samples")
+Heatmap(t(as.matrix(table(IntData.B_30h$B_clusters, 
+                          IntData.B_30h$Stimulation))/colSums(as.matrix(table(IntData.B_30h$Stimulation, 
+                                                                             IntData.B_30h$B_clusters)))), name = "Stimulation")
+```
+
+
+
+```{r Filtering_UMAPGeneration_30h, fig.width=6, fig.height=4}
+# Change idents needed in the subset function
+Idents(IntData.B_30h) <- "B_clusters"
+# Subsetting the data
+IntData.B_30h.FilCus <- subset(IntData.B_30h,
+                              # Only extract the clusters without cluster 17 and 22
+                              idents = unique(levels(IntData.B_30h$B_clusters))[!unique(levels(IntData.B_30h$B_clusters)) %in% 
+                                                                                  c("12", "19", "24")])
+# Visualization to check if clusters were proberly removed
+DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_integrated.umap.rna",
+        group.by = "B_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())
+```
+
+### Dimensionality reduction without data integration
+
+In a first step, dimensionality reduction was performe in the standard way, without taking into account any integration of the data. This is performed by generating PC of interest and clustering based on these PCs. Next, a UMAP was generated using the most interesting PCs (using an albow plot to decide on this number).
+
+```{r DimRed_NoIntegration, fig.width=15, fig.height=4}
+# Generation of new UMAP 
+## Run PCA analysis for dimensionality reduction
+IntData.B_30h.FilCus <- Seurat::RunPCA(object = IntData.B_30h.FilCus,
+                                      # Based on RNA only
+                                      assay = "RNA",
+                                      # Name to save
+                                      reduction.name = "B_filtered.pca")
+## Check interesting number of dimensions in pca dimensionality reduction
+ElbowPlot(IntData.B_30h.FilCus, ndims = 50, reduction = "B_filtered.pca")
+
+## Generation of clusters
+IntData.B_30h.FilCus <- FindNeighbors(IntData.B_30h.FilCus, 
+                                reduction = "B_filtered.pca", 
+                                dims = 1:30, graph.name = "B_filtered")
+### Clustering using multiple resolution values
+for (val_res in seq(0.5,2.5, by=0.5)){
+  ResVal<-paste0("B_filtered_res_", val_res)
+  message(paste0("Busy working on clustering with resolution ", val_res))
+  IntData.B_30h.FilCus<-FindClusters(IntData.B_30h.FilCus,
+                                    resolution=val_res,
+                        verbose = FALSE, cluster.name = ResVal,
+                        graph.name = "B_filtered")}
+# Clustree to check the select the appropriate resolution
+clustree(IntData.B_30h.FilCus, 
+         # Select only the correct clusters based on the resolution
+         prefix = "B_filtered_res_",
+         # Size of the nodes
+         node_size = 6,
+         # Edges cross as little a possible
+         layout = "sugiyama",
+         # Coloring the nodes based on fraction of T cells
+         # Per cluster 
+         node_colour = "lightblue",
+         show_axis = TRUE)+
+  scale_color_gradient(low = "lightgrey",
+                       high = "#A00D0D")+
+  scale_edge_color_continuous(low = "lightgrey",
+                             high = "#690F82")+
+  labs(edge_alpha = "Proportion moved cells",
+       edge_colour = "Counts moved cells",
+       colour = "B cell fraction",
+       title = "B filtered clusters",
+       subtitle = "RNA")+
+  ylab("Resolution")+
+  theme_clustree
+## Resolution of 1.5 seems okay 
+## Better to overcluster, merging clusters is possible if necessary
+Res_Method<-c("Resolution" = 1.5)
+Res_Method[]<-paste0("B_filtered_res_",Res_Method)
+IntData.B_30h.FilCus<-SelectMetaData(object = IntData.B_30h.FilCus,
+                               to_stay = c("B_filtered_clusters" = Res_Method[["Resolution"]]),
+                               pattern_remove = "B_filtered_res_")
+
+## RUN UMAP dimensionality reduction based on the previous PCA analysis
+IntData.B_30h.FilCus <- RunUMAP(IntData.B_30h.FilCus, 
+                    reduction = "B_filtered.pca", 
+                    # Focus on the first 30 PC based on the elbow plot generated above
+                    dims = 1:30, reduction.name = "B_filtered.umap")
+
+# Visualization of the final UMAP and its clusters
+DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "B_filtered_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) + 
+  (DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "Stimulation",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  scale_color_manual(values = colorsStim))+
+  (DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "predicted.celltype.l1",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+     scale_color_manual(values = colorsCellType))
+
+table(IntData.B_30h.FilCus$B_filtered_clusters, IntData.B_30h.FilCus$B_clusters)
+
+# Save the plot
+ggsave(filename = file.path(params$path_Results, paste0(params$date,
+                                                        "_FilteredB_30h_UMAP_clusters_stimulations_annotation.pdf")),
+       device = "pdf", height = 4, width = 15,
+       dpi = 330)
+```
+
+```{r FeaturePlot_30hours}
+# Check the feature expression typical for B and T cells
+# Mainly focussing on CD3 and CD19 as markers (expressed in ADT)
+DefaultAssay(IntData.B_30h)<-"ADT"
+FeaturePlot(IntData.B_30h, features  = c("CD3", "CD3.1", "CD19.1"),
+            reduction = "B_integrated.umap.rna")
+
+# Mainly focussing on CD3 and CD19 as markers (expressed in RNA)
+DefaultAssay(IntData.B_30h)<-"RNA"
+FeaturePlot(IntData.B_30h, features  = c("CD3E", "CD3D", "CD3G", "CD19"),
+            reduction = "B_integrated.umap.rna")
+
+# Check filtered cells as well
+# Mainly focussing on CD3 and CD19 as markers (expressed in RNA)
+DefaultAssay(IntData.B_30h.FilCus)<-"RNA"
+FeaturePlot(IntData.B_30h.FilCus, features  = c("CD3E", "CD3D", "CD3G", "CD19"),
+            reduction = "B_filtered.umap")
+```
+
+```{r DensityPlots_Stimulations_30h, fig.height=10, fig.width=12}
+Idents(IntData.B_30h.FilCus)<-'Stimulation'
+# Initialization of list for plots
+Dens.plotlist <- list()
+# Generate the density plots and save them in the list
+for (stim in unique(IntData.B_30h.FilCus$Stimulation)){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_30h.FilCus, reduction = "B_filtered.umap",
+                                 group.by = "Stimulation", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_30h.FilCus, idents = stim)@reductions[["B_filtered.umap"]]@cell.embeddings,
+                   mapping = aes(x = Bfilteredumap_1,
+                                 y = Bfilteredumap_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+    ylim(-7,7)+
+    xlim(-8,8)
+}
+
+# Join plots
+ggarrange(plotlist = Dens.plotlist, ncol = 3, nrow = 2)
+# Save plot
+ggsave(filename = file.path(params$path_Results, paste0(params$date, 
+                                                        "_FilteredB_30h_UMAP_density_stimulations.pdf")),
+       device = "pdf", height = 10, width = 12,
+       dpi = 330)
+
+# Clean
+rm(Dens.plotlist)
+```
+
+### Dimensionality reduction with data integration - CCA
+
+In this part, the filtered B cell subset is first integrated using the CCA approach. Additionally, clusters are generated and a UMAP dimensionality reduction is performed for downstream visualization.
+
+```{r DimRed_CCAintegration, fig.width=15, fig.height=4}
+#### INTEGRATION ####
+# Set the default assay to RNA
+DefaultAssay(IntData.B_30h.FilCus) <- "RNA"
+
+# Split the data according the sampleID (batch effects)
+IntData.B_30h.FilCus[["RNA"]]<-split(IntData.B_30h.FilCus[["RNA"]],
+                                    IntData.B_30h$samplename)
+# Normalization
+IntData.B_30h.FilCus<-Seurat::NormalizeData(IntData.B_30h.FilCus)
+# Variable Features
+IntData.B_30h.FilCus<-Seurat::FindVariableFeatures(IntData.B_30h.FilCus)
+# Scaling
+IntData.B_30h.FilCus<-Seurat::ScaleData(IntData.B_30h.FilCus, 
+                                       features = rownames(IntData.B_30h.FilCus))
+# Dimensionality reduction (unintegrated)
+IntData.B_30h.FilCus<-Seurat::RunPCA(IntData.B_30h.FilCus, assay = "RNA", 
+                                    reduction.name = "B_filtered_pca.priorIntegration.rna")
+IntData.B_30h.FilCus<-Seurat::FindNeighbors(IntData.B_30h.FilCus, dims = 1:20, 
+                                           reduction = "B_filtered_pca.priorIntegration.rna")
+IntData.B_30h.FilCus<-Seurat::FindClusters(IntData.B_30h.FilCus, resolution = 2, 
+                                          cluster.name = "B_filtered_pca_clusters.priorIntegration.rna")
+IntData.B_30h.FilCus<-Seurat::RunUMAP(IntData.B_30h.FilCus, dims = 1:20, reduction = "B_filtered_pca.priorIntegration.rna", 
+                           reduction.name = "B_filtered_umap.priorIntegration.rna")
+# CCA integration of RNA layer
+IntData.B_30h.FilCus<-IntegrateLayers(IntData.B_30h.FilCus, method = CCAIntegration,
+                           orig.reduction = "B_filtered_pca.priorIntegration.rna", 
+                           new.reduction = "B_filtered_CCAInt.rna",
+                           verbose = F)
+
+# Joining layers
+IntData.B_30h.FilCus[["RNA"]] <- JoinLayers(IntData.B_30h.FilCus[["RNA"]])
+
+#### CLUSTERING ####
+# Clustering based on the integrated data
+IntData.B_30h.FilCus <- FindNeighbors(IntData.B_30h.FilCus, 
+                           reduction = "B_filtered_CCAInt.rna", 
+                           dims = 1:30, graph.name = "B_filtered_CCAInt.rna_graph")
+# Clustering using multiple resolution values
+for (val_res in seq(0.5,2.5, by=0.5)){
+  ResVal<-paste0("B_filtered_CCAInt_clusters_res_", val_res)
+  message(paste0("Busy working on B cell clustering with resolution ", val_res))
+  IntData.B_30h.FilCus<-FindClusters(IntData.B_30h.FilCus,resolution=val_res,
+                          verbose = FALSE, cluster.name = ResVal,
+                          graph.name = "B_filtered_CCAInt.rna_graph")}
+
+# Clustree to check the select the appropriate resolution
+clustree(IntData.B_30h.FilCus, 
+         # Select only the correct clusters based on the resolution
+         prefix = "B_filtered_CCAInt_clusters_res_",
+         # Size of the nodes
+         node_size = 6,
+         # Edges cross as little a possible
+         layout = "sugiyama",
+         # Coloring the nodes based on fraction of B cells
+         # Per cluster 
+         node_colour = "lightblue",
+         show_axis = TRUE)+
+  scale_color_gradient(low = "lightgrey",
+                       high = "#A00D0D")+
+  scale_edge_color_continuous(low = "lightgrey",
+                              high = "#690F82")+
+  labs(edge_alpha = "Proportion moved cells",
+       edge_colour = "Counts moved cells",
+       colour = "B cell fraction",
+       title = "Singlets B cells",
+       subtitle = "RNA")+
+  ylab("Resolution")+
+  theme_clustree
+
+# Resolution of 1.5 seems okay 
+# Better to overcluster, merging clusters is possible if necessary
+Res_Method<-c("Resolution" = 1.5)
+Res_Method[]<-paste0("B_filtered_CCAInt_clusters_res_",Res_Method)
+
+IntData.B_30h.FilCus<-SelectMetaData(object = IntData.B_30h.FilCus,
+                          to_stay = c("B_filtered_CCAInt_clusters" = Res_Method[["Resolution"]]),
+                          pattern_remove = "B_filtered_CCAInt_clusters_res_")
+
+IntData.B_30h.FilCus <- RunUMAP(IntData.B_30h.FilCus,
+                               reduction = "B_filtered_CCAInt.rna",
+                               dims = 1:30, reduction.name = "B_filtered_CCAInt.umap.rna")
+
+# Visualization of integrated data + clusters
+DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "B_filtered_CCAInt_clusters",
+        raster = F, label = T)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "B cell clusters")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) + 
+  (DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "Stimulation",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Stimulation")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+  scale_color_manual(values = colorsStim))+
+  (DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "predicted.celltype.l1",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Cell type prediction Azimuth")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())+
+     scale_color_manual(values = colorsCellType)) + 
+  plot_annotation(title = "CCA integrated")
+```
+
+```{r DensityPlots_Stimulations_30h, fig.height=10, fig.width=12}
+Idents(IntData.B_30h.FilCus)<-'Stimulation'
+# Initialization of list for plots
+Dens.plotlist <- list()
+# Generate the density plots and save them in the list
+for (stim in unique(IntData.B_30h.FilCus$Stimulation)){
+  Dens.plotlist[[stim]] <- DimPlot(IntData.B_30h.FilCus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "Stimulation", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_30h.FilCus, idents = stim)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = stim, x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank())+
+    ylim(-8,8)+
+    xlim(-8,8)
+}
+
+# Join plots
+ggarrange(plotlist = Dens.plotlist, ncol = 3, nrow = 2)
+# Save plot
+ggsave(filename = file.path(params$path_Results, paste0(params$date, 
+                                                        "_FilteredB_30h_CCAint_UMAP_density_stimulations.pdf")),
+       device = "pdf", height = 9, width = 12,
+       dpi = 330)
+
+# Clean
+rm(Dens.plotlist)
+```
+
+### Comparison with or without integration
+
+```{r ComparisonIntegration_DimPlot, fig.height=3, fig.width=8}
+#### DIMPLOTs ####
+DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered_CCAInt.umap.rna",
+        group.by = "samplename",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "CCA integration")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) +
+  scale_color_manual(values = colorsSample) + 
+  (DimPlot(object = IntData.B_30h.FilCus,
+        reduction = "B_filtered.umap",
+        group.by = "samplename",
+        raster = F, label = F)+
+    themeG+
+    labs(x = "RNA_UMAP1", y = "RNA_UMAP2",
+         title = "Without integration")+
+    theme(panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank()) +
+  scale_color_manual(values = colorsSample))
+```
+
+```{r ComparisonIntegration_DensityPlots, fig.height=7, fig.width=6}
+### DENSITY PLOTS ###
+Idents(IntData.B_30h.FilCus)<-'samplename'
+# Initialization of list for plots
+Dens.plotlist <- list()
+# Generate the density plots and save them in the list
+for (pool in unique(IntData.B_30h.FilCus$samplename)){
+  Dens.plotlist[[paste0("CCAInt - ", pool)]] <- DimPlot(IntData.B_30h.FilCus, reduction = "B_filtered_CCAInt.umap.rna",
+                                 group.by = "samplename", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_30h.FilCus, idents = pool)@reductions[["B_filtered_CCAInt.umap.rna"]]@cell.embeddings,
+                   mapping = aes(x = BfilteredCCAIntumaprna_1,
+                                 y = BfilteredCCAIntumaprna_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = paste0("CCAInt - ", pool), x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5))+
+    ylim(-7,7)+
+    xlim(-8,8)
+  
+  Dens.plotlist[[paste0("No Integration - ", pool)]] <- DimPlot(IntData.B_30h.FilCus, reduction = "B_filtered.umap",
+                                 group.by = "samplename", cols = rep("lightgrey", times = 5))+
+    themeG+
+    theme(legend.position = "none")+
+    stat_density2d(data = subset(IntData.B_30h.FilCus, idents = pool)@reductions[["B_filtered.umap"]]@cell.embeddings,
+                   mapping = aes(x = Bfilteredumap_1,
+                                 y = Bfilteredumap_2,
+                                 fill = ..level..),
+                   geom = "polygon", alpha = 0.6)+
+    scale_fill_gradient(low = "lightblue",high = "darkblue", guide = "colourbar",
+                        breaks = c(0,0.05, 0.1))+
+    labs(title = paste0("No Integration - ", pool), x = "UMAP1", y = "UMAP2")+
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.border = element_rect(colour = "grey60", fill=NA, linewidth=0.5))+
+    ylim(-7,7)+
+    xlim(-8,8)
+}
+
+# Join plots
+ggarrange(plotlist = Dens.plotlist, ncol = 2, nrow = 3)
+
+# Clean
+rm(Dens.plotlist)
+```
+
+
+## Save final B cell subsets
+```{r SaveRDS_BSubsets}
+saveRDS(IntData.B_8h.FilCus,
+        file = file.path(params$path_Results,
+                         "SeuratObjects",
+                         paste0(params$date, "_seuratObj_NoBase_Integrated_Bclusters_Filtered_8h.rds")))
+saveRDS(IntData.B_30h.FilCus,
+        file = file.path(params$path_Results,
+                         "SeuratObjects",
+                         paste0(params$date, "_seuratObj_NoBase_Integrated_Bclusters_Filtered_30h.rds")))
+```
+
+## Read in final B cell subsets
+```{r SaveRDS_BSubsets, eval=FALSE}
+IntData.B_8h.FilCus<-readRDS(file = file.path(params$path_Results,
+                                             "SeuratObjects",
+                                             paste0(params$date, "_seuratObj_NoBase_Integrated_Bclusters_Filtered_8h.rds")))
+IntData.B_30h.FilCus<-readRDS(file = file.path(params$path_Results,
+                                               "SeuratObjects",
+                                               paste0(params$date, "_seuratObj_NoBase_Integrated_Bclusters_Filtered_30h.rds")))
+```
+
+# Differential gene expression between stimulated and unstimulated cells 
+
+This section is almost entirely copy-pasted as coded in the script `011_DEGenes_Visualization_GSEAOverlap.Rmd`. The only difference is the input B cell subset, using the filtered subset this time, and an adaptation was perform to perform the HGT analysis more correctly.
+
+This section focuses on the differential gene expression analysis solely based on the metadata annotation of the cells: either unstimulated or stimulated with a specific stimulatory condition.
+
+```{r DEGeneAnalysis_Stimulation}
+set.seed(2024)
+# Change idents of cells
+Idents(IntData.B_8h.FilCus)<-"Stimulation"
+Idents(IntData.B_30h.FilCus)<-"Stimulation"
+
+#Initialization of data frame
+DEG_Stim_Unstim_8h_FilClus<-sapply(unique(IntData.B_8h.FilCus$Stimulation),
+                        function(x) NULL)
+DEG_Stim_Unstim_30h_FilClus<-sapply(unique(IntData.B_30h.FilCus$Stimulation),
+                        function(x) NULL)
+
+# Remove unstimulated (is used as a reference)
+DEG_Stim_Unstim_8h_FilClus[["Unstimulated"]]<-NULL
+DEG_Stim_Unstim_30h_FilClus[["Unstimulated"]]<-NULL
+
+# Perform DEG analysis
+for (stim in names(DEG_Stim_Unstim_8h_FilClus)){
+  DEG_Stim_Unstim_8h_FilClus[[stim]]<-FindMarkers(object = IntData.B_8h.FilCus,
+                                       min.pct = 0, logfc.threshold = 0,
+                                       ident.1 = stim, ident.2 = "Unstimulated")%>%
+    mutate(Score = (pct.1/(pct.2 + 0.01))*avg_log2FC)%>%
+    rownames_to_column(var = "Gene")
+}
+
+for (stim in names(DEG_Stim_Unstim_30h_FilClus)){
+  DEG_Stim_Unstim_30h_FilClus[[stim]]<-FindMarkers(object = IntData.B_30h.FilCus,
+                                       min.pct = 0, logfc.threshold = 0,
+                                       ident.1 = stim, ident.2 = "Unstimulated")%>%
+    mutate(Score = (pct.1/(pct.2 + 0.01))*avg_log2FC)%>%
+    rownames_to_column(var = "Gene")
+}
+
+# Save list of DE genes (all genes are scored here)
+saveRDS(DEG_Stim_Unstim_8h_FilClus, 
+        file = file.path(params$path_Results, 
+                         "DEGAnalysis",
+                         paste(params$date,
+                               params$prefix_output, "DE_AllGenes_Stim_vs_Unstim_8h.rds", sep = "_")))
+saveRDS(DEG_Stim_Unstim_30h_FilClus, 
+        file = file.path(params$path_Results, 
+                         "DEGAnalysis",
+                         paste(params$date,
+                               params$prefix_output, "DE_AllGenes_Stim_vs_Unstim_30h.rds", sep = "_")))
+``` 
+
+To check if these genes are up or downregulated, an additional annotation is added to the dataframe.
+
+```{r DEGenesAnnot}
+for (stim in names(DEG_Stim_Unstim_8h_FilClus)){
+  # Add additional information to the dataset
+  DEG_Stim_Unstim_8h_FilClus[[stim]]<-DEG_Stim_Unstim_8h_FilClus[[stim]]%>%
+  mutate(Annot=case_when(
+    avg_log2FC > 1 & p_val_adj <0.05 ~ "UP",
+    avg_log2FC < -1 & p_val_adj <0.05 ~ "DOWN",
+    TRUE ~ "NS"))
+  # Select genes to be plotted as label on the volcano graph
+  top20genes <- head(DEG_Stim_Unstim_8h_FilClus[[stim]]%>%
+                       filter(Annot != 'NS')%>%
+                       arrange(p_val_adj, descending = TRUE), 20)[,'Gene']
+  DEG_Stim_Unstim_8h_FilClus[[stim]]<-DEG_Stim_Unstim_8h_FilClus[[stim]]%>%
+    mutate(GeneLabels=ifelse(DEG_Stim_Unstim_8h_FilClus[[stim]]$Gene %in% top20genes,
+                             DEG_Stim_Unstim_8h_FilClus[[stim]]$Gene,NA))
+}
+
+for (stim in names(DEG_Stim_Unstim_30h_FilClus)){
+  # Add additional information to the dataset
+  DEG_Stim_Unstim_30h_FilClus[[stim]]<-DEG_Stim_Unstim_30h_FilClus[[stim]]%>%
+  mutate(Annot=case_when(
+    avg_log2FC > 1 & p_val_adj <0.05 ~ "UP",
+    avg_log2FC < -1 & p_val_adj <0.05 ~ "DOWN",
+    TRUE ~ "NS"))
+  # Select genes to be plotted as label on the volcano graph
+  top20genes <- head(DEG_Stim_Unstim_30h_FilClus[[stim]]%>%
+                       filter(Annot != 'NS')%>%
+                       arrange(p_val_adj, descending = TRUE), 20)[,'Gene']
+  DEG_Stim_Unstim_30h_FilClus[[stim]]<-DEG_Stim_Unstim_30h_FilClus[[stim]]%>%
+    mutate(GeneLabels=ifelse(DEG_Stim_Unstim_30h_FilClus[[stim]]$Gene %in% top20genes,
+                             DEG_Stim_Unstim_30h_FilClus[[stim]]$Gene,NA))
+}
+rm(top20genes)
+```
+
+## Visualization with Volcano plot
+
+```{r Volcano_8h, fig.height=4, fig.width=6}
+ggplot(DEG_Stim_Unstim_8h_FilClus$IFNgamma, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("IFNg/R-848")+
+  ylim(0,400)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+
+ggplot(DEG_Stim_Unstim_8h_FilClus$MegaCD40L, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("MegaCD40L")+
+  ylim(0,310)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+
+ggplot(DEG_Stim_Unstim_8h_FilClus$`CD3/CD28_beads`, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("Anti-CD3/CD28")+
+  ylim(0,310)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+
+ggplot(DEG_Stim_Unstim_8h_FilClus$ODN2006, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("ODN2006")+
+  ylim(0,310)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+```
+
+```{r Volcano_30h, fig.height=4, fig.width=6}
+ggplot(DEG_Stim_Unstim_30h_FilClus$IFNgamma, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("IFNg/R-848")+
+  ylim(0,400)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+
+ggplot(DEG_Stim_Unstim_30h_FilClus$MegaCD40L, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("MegaCD40L")+
+  ylim(0,310)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+
+ggplot(DEG_Stim_Unstim_30h_FilClus$`CD3/CD28_beads`, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("Anti-CD3/CD28")+
+  ylim(0,310)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+
+ggplot(DEG_Stim_Unstim_30h_FilClus$ODN2006, mapping = aes(x = avg_log2FC, y = ifelse(p_val_adj == 0,
+                                                                              -log10(.Machine$double.xmin),
+                                                                              -log10(p_val_adj)),
+                                        color = Annot, label = GeneLabels))+
+  geom_point(size = 0.7)+
+  geom_vline(xintercept = c(1, -1), color = "grey60", linetype = "dashed")+
+  geom_hline(yintercept = -log10(0.05), color = "grey60", linetype = "dashed")+
+  themeG+
+  theme(panel.grid.major = element_line(color = "grey90", 
+                                  size = 0.4, 
+                                  linetype = 1),
+        axis.line = element_blank(),
+        axis.ticks = element_blank())+
+  coord_cartesian(expand = TRUE)+
+  scale_color_manual(values = colDirection)+
+  ggtitle("ODN2006")+
+  ylim(0,310)+xlim(-10,10)+
+  geom_text_repel(max.overlaps = Inf)+
+  labs(x = "Average Log2FC", y = "-Log10 of adjusted p-value")
+```
+
+
+## Total gene per stimulation
+
+```{r DEGenesTotal}
+TotalDEGene_Time<-rbind(
+  # Extract and combine both time points
+  lapply(X = DEG_Stim_Unstim_8h_FilClus, 
+       FUN = function(x){table(x$Annot)})%>%
+    unlist()%>%
+    data.frame()%>%
+    mutate(Time = "8h")%>%
+  rownames_to_column(var = "Stimulation"),
+  lapply(X = DEG_Stim_Unstim_30h_FilClus,
+         FUN = function(x){table(x$Annot)})%>%
+    unlist()%>%
+    data.frame()%>%
+    mutate(Time = "30h")%>%
+  rownames_to_column(var = "Stimulation"))
+
+# Rename the columns
+names(TotalDEGene_Time)[names(TotalDEGene_Time)=="."]<-"Counts"
+
+# Reorder the data frame
+TotalDEGene_Time<-TotalDEGene_Time%>%
+  mutate(Direction = gsub(x = Stimulation, pattern = ".*\\.", replacement = ""),
+         Stimulation = gsub(x = Stimulation, pattern = "\\..*", replacement = ""),
+         Time = factor(x = Time,
+                       levels = c("8h", "30h"),
+                       ordered = T),
+         Stimulation = factor(x = Stimulation,
+                              levels = c("ODN2006", "IFNgamma", "MegaCD40L", "CD3/CD28_beads"),
+                              ordered = T),
+         Direction = factor(x = Direction,
+                            levels = c("UP", "DOWN"),
+                            ordered = T))%>%
+  filter(Direction != "NS")
+TotalDEGene_Time
+```
+
+```{r DEGenesTotal_Barplot, fig.height=3, fig.width=6}
+# Visualization using bar plots
+ggplot(TotalDEGene_Time%>%
+         mutate(Stimulation = factor(Stimulation,
+                                     levels = c("IFNgamma", "ODN2006", "CD3/CD28_beads", "MegaCD40L"),
+                                     ordered = T)), 
+       mapping = aes(y = Counts, x = Time, fill = Direction))+
+  geom_col(position = 'dodge')+
+  scale_fill_manual(values = colDirection)+
+  facet_wrap(facets = vars(Stimulation),
+             ncol = 4)+
+  themeG+
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid.major.y = element_line(color = "grey95"))+
+  labs(y = "# Differentially expressed genes",
+       x = NULL)
+```
+
+```{r DEGenesTotal_Dotplot}
+# Visualization
+ggplot(TotalDEGene_Time, mapping = aes(x = Time, y = Counts, color = Direction,
+                                       group = Direction))+
+  geom_point()+
+  geom_line(alpha = 0.25)+
+  scale_color_manual(values = colDirection)+
+  facet_wrap(facets = vars(Stimulation),
+             ncol = 4)+
+  themeG+
+  theme(axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        panel.grid.minor = element_line(colour = "grey95"),
+        panel.grid.major = element_line(colour = "grey95"))+
+  ylim(0,NA)
+```
+
+
+## Overlap DEgenes - Upset plot
+An upset plot is also generated to visualize the overlap of DE genes between stimulations better. This is performed using the Complex Heatmap package. Additional information can be found [here](https://jokergoo.github.io/ComplexHeatmap-reference/book/upset-plot.html). In this upset plot, `mode = "distinct'` is used to visualize the overlap between stimulatory conditions as neat as possible.
+
+### 8h stimulation
+
+```{r UpsetPlotVisualzation_OverlapDEGenes_8h, fig.height=4, fig.width=6}
+# Only focus on upregulated genes
+UpsetData_UP_8h.FilClus <- list("IFN" = (DEG_Stim_Unstim_8h_FilClus$IFNgamma%>%
+                                           filter(Annot =="UP"))[, "Gene"], 
+                               "MegaCD40L" = (DEG_Stim_Unstim_8h_FilClus$MegaCD40L%>%
+                                                filter(Annot =="UP"))[, "Gene"], 
+                               "ODN2006" = (DEG_Stim_Unstim_8h_FilClus$ODN2006%>%
+                                              filter(Annot =="UP"))[, "Gene"],
+                               "CD3CD28" = (DEG_Stim_Unstim_8h_FilClus$`CD3/CD28_beads`%>%
+                                              filter(Annot =="UP"))[, "Gene"]) 
+# Generation of list of upregulated genes per 
+UpsetData_UP_8h.FilClus <- list_to_matrix(UpsetData_UP_8h.FilClus)
+# Generation of comb_mat object
+UpsetData_UP_8h.FilClus <- make_comb_mat(UpsetData_UP_8h.FilClus, mode = "distinct")
+# Generation of the plot
+UpSet(UpsetData_UP_8h.FilClus, comb_order = order(comb_size(UpsetData_UP_8h.FilClus), decreasing = T),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      column_title = "Overlap upregulated DE genes",
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_UP_8h.FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_UP_8h.FilClus),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90))
+
+# Only focus on downregulated genes
+UpsetData_DOWN_8h.FilClus <- list("IFN" = (DEG_Stim_Unstim_8h_FilClus$IFNgamma%>%
+                                             filter(Annot =="DOWN"))[, "Gene"], 
+                                 "MegaCD40L" = (DEG_Stim_Unstim_8h_FilClus$MegaCD40L%>%
+                                                  filter(Annot =="DOWN"))[, "Gene"], 
+                                 "ODN2006" = (DEG_Stim_Unstim_8h_FilClus$ODN2006%>%
+                                                filter(Annot =="DOWN"))[, "Gene"],
+                                 "CD3CD28" = (DEG_Stim_Unstim_8h_FilClus$`CD3/CD28_beads`%>%
+                                                filter(Annot =="DOWN"))[, "Gene"]) 
+# Generation of list of downregulated genes per 
+UpsetData_DOWN_8h.FilClus <- list_to_matrix(UpsetData_DOWN_8h.FilClus)
+# Generation of comb_mat object
+UpsetData_DOWN_8h.FilClus <- make_comb_mat(UpsetData_DOWN_8h.FilClus, mode = "distinct")
+# Generation of the plot
+UpSet(UpsetData_DOWN_8h.FilClus, comb_order = order(comb_size(UpsetData_DOWN_8h.FilClus), decreasing = T),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      column_title = "Overlap downregulated DE genes",
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_DOWN_8h.FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_DOWN_8h.FilClus),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"), 
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90))
+
+# Only focus on significantly different genes
+UpsetData_SIGN_8h_FilClus <- list("IFN" = (DEG_Stim_Unstim_8h_FilClus$IFNgamma%>%
+                                           filter(Annot !="NS"))[, "Gene"], 
+                               "MegaCD40L" = (DEG_Stim_Unstim_8h_FilClus$MegaCD40L%>%
+                                                filter(Annot !="NS"))[, "Gene"], 
+                               "ODN2006" = (DEG_Stim_Unstim_8h_FilClus$ODN2006%>%
+                                              filter(Annot !="NS"))[, "Gene"],
+                               "CD3CD28" = (DEG_Stim_Unstim_8h_FilClus$`CD3/CD28_beads`%>%
+                                              filter(Annot !="NS"))[, "Gene"]) 
+# Generation of list of downregulated genes per 
+UpsetData_SIGN_8h_FilClus <- list_to_matrix(UpsetData_SIGN_8h_FilClus)
+# Generation of comb_mat object
+UpsetData_SIGN_8h_FilClus <- make_comb_mat(UpsetData_SIGN_8h_FilClus, mode = "distinct")
+# Generation of the plot
+UpSet(UpsetData_SIGN_8h_FilClus, comb_order = order(comb_size(UpsetData_SIGN_8h_FilClus), decreasing = T),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      column_title = "Overlap significant DE genes",
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_SIGN_8h_FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_SIGN_8h_FilClus),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"), 
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90))
+```
+
+
+```{r UpsetPlotVisualzation_OverlapDEGenes_Advanced, fig.height=4, fig.width=6}
+### GENERATE DATA FRAMES NEEDED TO PLOT DATA ###
+# Filter out the genes of interest in 2 different sets
+UpsetData_COMB_8h_FilClus <- c(lapply(DEG_Stim_Unstim_8h_FilClus, FUN = function(stim){(stim%>%
+                                                                          filter(Annot == "UP"))[, "Gene"]}),
+                       lapply(DEG_Stim_Unstim_8h_FilClus, FUN = function(stim){(stim%>%
+                                                                          filter(Annot == "DOWN"))[, "Gene"]}))
+names(UpsetData_COMB_8h_FilClus)<- paste(names(UpsetData_COMB_8h_FilClus), rep(c("UP", "DOWN"), each = 4), sep = "_")
+
+
+# Generation of list of downregulated genes per 
+UpsetData_COMB_8h_FilClus <- as.data.frame(list_to_matrix(UpsetData_COMB_8h_FilClus))
+
+# Check if the expression change is consistent between stimulations
+UpsetData_COMB_8h_FilClus<-UpsetData_COMB_8h_FilClus%>%
+  mutate_at(vars(ends_with("UP")), function(x){ifelse(x==1, "UP", NA)})%>%
+  mutate_at(vars(ends_with("DOWN")), function(x){ifelse(x==1, "DOWN", NA)})
+
+# Check if the genes were upregulated/downregulated/mixed over the distinct subsets 
+UpsetData_COMB_8h_FilClus$Direction<-apply(UpsetData_COMB_8h_FilClus, 1, function(col) {
+  u <- unique(na.omit(col))
+  if (length(u) == 1) {
+    # either "UP" or "DOWN"
+    return(u)
+  } else if (length(u) > 1) {
+    return("MIXED")
+  } else {
+    # no non-NA values
+    return(NA_character_)
+  }
+})
+
+# Store the genes linked to specific subsets
+# stack function creates a data frame from a list
+Subsets<-stack(sapply(X = comb_name(UpsetData_SIGN_8h_FilClus),
+                      FUN = function(subset){extract_comb(UpsetData_SIGN_8h_FilClus, subset)}))
+colnames(Subsets) <- c("Genes", "Subset")
+UpsetData_COMB_8h_FilClus <- left_join(x = UpsetData_COMB_8h_FilClus%>%
+                              rownames_to_column(var = "Genes"),
+                            y = Subsets,
+                            by = "Genes")%>%
+  mutate(Direction = factor(Direction, levels = c("MIXED", "UP", "DOWN"),
+                               ordered = T))
+
+# Store the table of the distinct directions
+UpsetData_COMB_8h_FilClus.table<-table(UpsetData_COMB_8h_FilClus$Subset,
+                            UpsetData_COMB_8h_FilClus$Direction)
+```
+
+Generation figure of manuscript figure. 
+
+```{r PlotUpset_DEGenes, fig.height=3, fig.width=7}
+### PLOTTING THE DATA USING UPSET PLOT OF COMPLEX HEATMAP ###
+# Generate upset plot
+upPlot<-
+  UpSet(UpsetData_SIGN_8h_FilClus, comb_order = order(comb_size(UpsetData_SIGN_8h_FilClus), decreasing = T),
+      #  Colors of the dots and balkjes onderaan 
+      comb_col = "#595B5C", bg_pt_col = "white",
+      # Add plot title
+      column_title = "Overlap significant DE genes",
+      # Update column annotation (entire set of DEgenes)
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_SIGN_8h_FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      # Update row annotation on top of the Upset plot
+      top_annotation = HeatmapAnnotation(
+                                      # Add barplot based on the direction of the DE genes
+                "Intersection size" = anno_barplot(UpsetData_COMB_8h_FilClus.table,
+                                                   border = FALSE,
+                                                   # Store correct colors
+                                                   gp = gpar(fill = colDirection[colnames(
+                                                     UpsetData_COMB_8h_FilClus.table)],
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(3, "cm")),
+                # Annotation name shown at the left side
+                annotation_name_side = "left",
+                # Rotation of the annotation at the left side
+                annotation_name_rot = 90))
+
+# Generate legend
+lgd = Legend(
+  labels    = colnames(UpsetData_COMB_8h_FilClus.table),
+  legend_gp = gpar(fill = colDirection[colnames(UpsetData_COMB_8h_FilClus.table)]),
+  title     = "Direction"
+)
+
+# Visualise the upset plot
+pdf(file.path(params$path_Results, 
+              "DEGAnalysis", 
+              paste0(params$date, "Upset_SignDEGenes_Stim_vs_Unstim_8h.pdf")), width=7, height=4)
+draw(upPlot,
+     annotation_legend_list = list(lgd),
+     annotation_legend_side = "left")
+dev.off()
+```
+
+### 30h stimulation
+
+```{r UpsetPlotVisualzation_OverlapDEGenes_30h, fig.height=4, fig.width=6}
+# Only focus on upregulated genes
+UpsetData_UP_30h.FilClus <- list("IFN" = (DEG_Stim_Unstim_30h_FilClus$IFNgamma%>%
+                                           filter(Annot =="UP"))[, "Gene"], 
+                               "MegaCD40L" = (DEG_Stim_Unstim_30h_FilClus$MegaCD40L%>%
+                                                filter(Annot =="UP"))[, "Gene"], 
+                               "ODN2006" = (DEG_Stim_Unstim_30h_FilClus$ODN2006%>%
+                                              filter(Annot =="UP"))[, "Gene"],
+                               "CD3CD28" = (DEG_Stim_Unstim_30h_FilClus$`CD3/CD28_beads`%>%
+                                              filter(Annot =="UP"))[, "Gene"]) 
+# Generation of list of upregulated genes per 
+UpsetData_UP_30h.FilClus <- list_to_matrix(UpsetData_UP_30h.FilClus)
+# Generation of comb_mat object
+UpsetData_UP_30h.FilClus <- make_comb_mat(UpsetData_UP_30h.FilClus, mode = "distinct")
+# Generation of the plot
+UpSet(UpsetData_UP_30h.FilClus, comb_order = order(comb_size(UpsetData_UP_30h.FilClus), decreasing = T),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      column_title = "Overlap upregulated DE genes",
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_UP_30h.FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_UP_30h.FilClus),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90))
+
+# Only focus on downregulated genes
+UpsetData_DOWN_30h.FilClus <- list("IFN" = (DEG_Stim_Unstim_30h_FilClus$IFNgamma%>%
+                                             filter(Annot =="DOWN"))[, "Gene"], 
+                                 "MegaCD40L" = (DEG_Stim_Unstim_30h_FilClus$MegaCD40L%>%
+                                                  filter(Annot =="DOWN"))[, "Gene"], 
+                                 "ODN2006" = (DEG_Stim_Unstim_30h_FilClus$ODN2006%>%
+                                                filter(Annot =="DOWN"))[, "Gene"],
+                                 "CD3CD28" = (DEG_Stim_Unstim_30h_FilClus$`CD3/CD28_beads`%>%
+                                                filter(Annot =="DOWN"))[, "Gene"]) 
+# Generation of list of downregulated genes per 
+UpsetData_DOWN_30h.FilClus <- list_to_matrix(UpsetData_DOWN_30h.FilClus)
+# Generation of comb_mat object
+UpsetData_DOWN_30h.FilClus <- make_comb_mat(UpsetData_DOWN_30h.FilClus, mode = "distinct")
+# Generation of the plot
+UpSet(UpsetData_DOWN_30h.FilClus, comb_order = order(comb_size(UpsetData_DOWN_30h.FilClus), decreasing = T),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      column_title = "Overlap downregulated DE genes",
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_DOWN_30h.FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_DOWN_30h.FilClus),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"), 
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90))
+
+# Only focus on significantly different genes
+UpsetData_SIGN_30h_FilClus <- list("IFN" = (DEG_Stim_Unstim_30h_FilClus$IFNgamma%>%
+                                           filter(Annot !="NS"))[, "Gene"], 
+                               "MegaCD40L" = (DEG_Stim_Unstim_30h_FilClus$MegaCD40L%>%
+                                                filter(Annot !="NS"))[, "Gene"], 
+                               "ODN2006" = (DEG_Stim_Unstim_30h_FilClus$ODN2006%>%
+                                              filter(Annot !="NS"))[, "Gene"],
+                               "CD3CD28" = (DEG_Stim_Unstim_30h_FilClus$`CD3/CD28_beads`%>%
+                                              filter(Annot !="NS"))[, "Gene"]) 
+# Generation of list of downregulated genes per 
+UpsetData_SIGN_30h_FilClus <- list_to_matrix(UpsetData_SIGN_30h_FilClus)
+# Generation of comb_mat object
+UpsetData_SIGN_30h_FilClus <- make_comb_mat(UpsetData_SIGN_30h_FilClus, mode = "distinct")
+# Generation of the plot
+UpSet(UpsetData_SIGN_30h_FilClus, comb_order = order(comb_size(UpsetData_SIGN_30h_FilClus), decreasing = T),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      column_title = "Overlap significant DE genes",
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_SIGN_30h_FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_SIGN_30h_FilClus),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"), 
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90))
+```
+
+
+```{r UpsetPlotVisualzation_OverlapDEGenes_Advanced, fig.height=4, fig.width=6}
+### GENERATE DATA FRAMES NEEDED TO PLOT DATA ###
+# Filter out the genes of interest in 2 different sets
+UpsetData_COMB_30h_FilClus <- c(lapply(DEG_Stim_Unstim_30h_FilClus, FUN = function(stim){(stim%>%
+                                                                          filter(Annot == "UP"))[, "Gene"]}),
+                       lapply(DEG_Stim_Unstim_30h_FilClus, FUN = function(stim){(stim%>%
+                                                                          filter(Annot == "DOWN"))[, "Gene"]}))
+names(UpsetData_COMB_30h_FilClus)<- paste(names(UpsetData_COMB_30h_FilClus), rep(c("UP", "DOWN"), each = 4), sep = "_")
+
+
+# Generation of list of downregulated genes per 
+UpsetData_COMB_30h_FilClus <- as.data.frame(list_to_matrix(UpsetData_COMB_30h_FilClus))
+
+# Check if the expression change is consistent between stimulations
+UpsetData_COMB_30h_FilClus<-UpsetData_COMB_30h_FilClus%>%
+  mutate_at(vars(ends_with("UP")), function(x){ifelse(x==1, "UP", NA)})%>%
+  mutate_at(vars(ends_with("DOWN")), function(x){ifelse(x==1, "DOWN", NA)})
+
+# Check if the genes were upregulated/downregulated/mixed over the distinct subsets 
+UpsetData_COMB_30h_FilClus$Direction<-apply(UpsetData_COMB_30h_FilClus, 1, function(col) {
+  u <- unique(na.omit(col))
+  if (length(u) == 1) {
+    # either "UP" or "DOWN"
+    return(u)
+  } else if (length(u) > 1) {
+    return("MIXED")
+  } else {
+    # no non-NA values
+    return(NA_character_)
+  }
+})
+
+# Store the genes linked to specific subsets
+# stack function creates a data frame from a list
+Subsets<-stack(sapply(X = comb_name(UpsetData_SIGN_30h_FilClus),
+                      FUN = function(subset){extract_comb(UpsetData_SIGN_30h_FilClus, subset)}))
+colnames(Subsets) <- c("Genes", "Subset")
+UpsetData_COMB_30h_FilClus <- left_join(x = UpsetData_COMB_30h_FilClus%>%
+                              rownames_to_column(var = "Genes"),
+                            y = Subsets,
+                            by = "Genes")%>%
+  mutate(Direction = factor(Direction, levels = c("MIXED", "UP", "DOWN"),
+                               ordered = T))
+
+# Store the table of the distinct directions
+UpsetData_COMB_30h_FilClus.table<-table(UpsetData_COMB_30h_FilClus$Subset,
+                            UpsetData_COMB_30h_FilClus$Direction)
+```
+
+Generation figure of manuscript figure. 
+
+```{r PlotUpset_DEGenes, fig.height=3, fig.width=7}
+### PLOTTING THE DATA USING UPSET PLOT OF COMPLEX HEATMAP ###
+# Generate upset plot
+upPlot<-
+  UpSet(UpsetData_SIGN_30h_FilClus, comb_order = order(comb_size(UpsetData_SIGN_30h_FilClus), decreasing = T),
+      #  Colors of the dots and balkjes onderaan 
+      comb_col = "#595B5C", bg_pt_col = "white",
+      # Add plot title
+      column_title = "Overlap significant DE genes",
+      # Update column annotation (entire set of DEgenes)
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_SIGN_30h_FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      # Update row annotation on top of the Upset plot
+      top_annotation = HeatmapAnnotation(
+                                      # Add barplot based on the direction of the DE genes
+                "Intersection size" = anno_barplot(UpsetData_COMB_30h_FilClus.table,
+                                                   border = FALSE,
+                                                   # Store correct colors
+                                                   gp = gpar(fill = colDirection[colnames(
+                                                     UpsetData_COMB_30h_FilClus.table)],
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(3, "cm")),
+                # Annotation name shown at the left side
+                annotation_name_side = "left",
+                # Rotation of the annotation at the left side
+                annotation_name_rot = 90))
+
+# Generate legend
+lgd = Legend(
+  labels    = colnames(UpsetData_COMB_30h_FilClus.table),
+  legend_gp = gpar(fill = colDirection[colnames(UpsetData_COMB_30h_FilClus.table)]),
+  title     = "Direction"
+)
+
+# Visualise the upset plot
+pdf(file.path(params$path_Results, 
+              "DEGAnalysis", 
+              paste0(params$date, "Upset_SignDEGenes_Stim_vs_Unstim_30h.pdf")), width=7, height=4)
+draw(upPlot,
+     annotation_legend_list = list(lgd),
+     annotation_legend_side = "left")
+dev.off()
+```
+
+## Hypergeometric testing in pathway enrichment analysis
+
+# Differential gene expression between incubation times
+
+```{r DEGeneAnalysis_IncubationTime}
+set.seed(2024)
+# Change idents of cells
+Idents(IntData.B_8h.FilCus)<-"Stimulation"
+Idents(IntData.B_30h.FilCus)<-"Stimulation"
+
+#Initialization of data frame
+DEG_Time_Stim_FilClus<-sapply(unique(IntData.B_8h.FilCus$Stimulation),
+                              function(x) NULL)
+
+# Perform DEG analysis
+for (stim in names(DEG_Time_Stim_FilClus)){
+  message(paste0("Working on stimulation ", stim))
+  MergedSeurat_Stim<-merge(x = subset(IntData.B_8h.FilCus,
+                                             idents = stim),
+                                   y = subset(IntData.B_30h.FilCus,
+                                              idents = stim),
+                           merge.data = TRUE,
+                           merge.dr = TRUE)
+  MergedSeurat_Stim[["RNA"]] <- JoinLayers(MergedSeurat_Stim[["RNA"]])
+  Idents(MergedSeurat_Stim)<-"TimePoint"
+  DEG_Time_Stim_FilClus[[stim]]<-FindMarkers(object = MergedSeurat_Stim,
+                                       min.pct = 0, logfc.threshold = 0,
+                                       # 8 hours of stimulation as reference
+                                       ident.1 = "30", ident.2 = 8)%>%
+    mutate(Score = (pct.1/(pct.2 + 0.01))*avg_log2FC)%>%
+    rownames_to_column(var = "Gene")
+}
+
+# Save list of DE genes (all genes are scored here)
+saveRDS(DEG_Time_Stim_FilClus, 
+        file = file.path(params$path_Results, 
+                         "DEGAnalysis",
+                         paste(params$date2, "DE_AllGenes_8h_vs_30h_PerStimulation.rds", sep = "_")))
+```
+
+```{r DEGeneAnalysis_IncubationTime_ReadIn}
+DEG_Time_Stim_FilClus<-readRDS(file = file.path(params$path_Results,
+                                                "DEGAnalysis",
+                                                 paste(params$date2, "DE_AllGenes_8h_vs_30h_PerStimulation.rds", sep = "_")))
+```
+
+```{r DEGeneAnalysis_InucubationTime_SignGenes}
+for (stim in names(DEG_Time_Stim_FilClus)){
+  # Add additional information to the dataset
+  DEG_Time_Stim_FilClus[[stim]]<-DEG_Time_Stim_FilClus[[stim]]%>%
+  mutate(Annot=case_when(
+    avg_log2FC > 1 & p_val_adj <0.05 ~ "UP",
+    avg_log2FC < -1 & p_val_adj <0.05 ~ "DOWN",
+    TRUE ~ "NS"))
+  # Select genes to be plotted as label on the volcano graph
+  top20genes <- head(DEG_Time_Stim_FilClus[[stim]]%>%
+                       filter(Annot != 'NS')%>%
+                       arrange(p_val_adj, descending = TRUE), 20)[,'Gene']
+  DEG_Time_Stim_FilClus[[stim]]<-DEG_Time_Stim_FilClus[[stim]]%>%
+    mutate(GeneLabels=ifelse(DEG_Time_Stim_FilClus[[stim]]$Gene %in% top20genes,
+                             DEG_Time_Stim_FilClus[[stim]]$Gene,NA))
+}
+```
+
+## Visualization DEGens between incubation times
+ 
+```{r UpsetPlot_IncuvbationTime_DataPreparation}
+# Only focus on significantly different genes
+UpsetData_SIGN_Time_FilClus <- list("IFN" = (DEG_Time_Stim_FilClus$IFNgamma%>%
+                                           filter(Annot !="NS"))[, "Gene"], 
+                               "MegaCD40L" = (DEG_Time_Stim_FilClus$MegaCD40L%>%
+                                                filter(Annot !="NS"))[, "Gene"], 
+                               "ODN2006" = (DEG_Time_Stim_FilClus$ODN2006%>%
+                                              filter(Annot !="NS"))[, "Gene"],
+                               "CD3CD28" = (DEG_Time_Stim_FilClus$`CD3/CD28_beads`%>%
+                                              filter(Annot !="NS"))[, "Gene"],
+                               "Unstimulated" = (DEG_Time_Stim_FilClus$Unstimulated%>%
+                                                   filter(Annot != "NS"))[, "Gene"]) 
+# Generation of list of significant genes per stimulation
+UpsetData_SIGN_Time_FilClus <- list_to_matrix(UpsetData_SIGN_Time_FilClus)
+# Generation of comb_mat object
+UpsetData_SIGN_Time_FilClus <- make_comb_mat(UpsetData_SIGN_Time_FilClus, mode = "distinct")
+
+### GENERATE DATA FRAMES NEEDED TO PLOT DATA ###
+# Filter out the genes of interest in 2 different sets
+UpsetData_COMB_Time_FilClus <- c(lapply(DEG_Time_Stim_FilClus, FUN = function(stim){(stim%>%
+                                                                          filter(Annot == "UP"))[, "Gene"]}),
+                                 lapply(DEG_Time_Stim_FilClus, FUN = function(stim){(stim%>%
+                                                                          filter(Annot == "DOWN"))[, "Gene"]}))
+names(UpsetData_COMB_Time_FilClus)<- paste(names(UpsetData_COMB_Time_FilClus), rep(c("UP", "DOWN"), each = 5), sep = "_")
+
+
+# Generation of list of downregulated genes per 
+UpsetData_COMB_Time_FilClus <- as.data.frame(list_to_matrix(UpsetData_COMB_Time_FilClus))
+
+# Check if the expression change is consistent between stimulations
+UpsetData_COMB_Time_FilClus<-UpsetData_COMB_Time_FilClus%>%
+  mutate_at(vars(ends_with("UP")), function(x){ifelse(x==1, "UP", NA)})%>%
+  mutate_at(vars(ends_with("DOWN")), function(x){ifelse(x==1, "DOWN", NA)})
+
+# Check if the genes were upregulated/downregulated/mixed over the distinct subsets 
+UpsetData_COMB_Time_FilClus$Direction<-apply(UpsetData_COMB_Time_FilClus, 1, function(col) {
+  u <- unique(na.omit(col))
+  if (length(u) == 1) {
+    # either "UP" or "DOWN"
+    return(u)
+  } else if (length(u) > 1) {
+    return("MIXED")
+  } else {
+    # no non-NA values
+    return(NA_character_)
+  }
+})
+
+# Store the genes linked to specific subsets
+# stack function creates a data frame from a list
+Subsets<-stack(sapply(X = comb_name(UpsetData_SIGN_Time_FilClus),
+                      FUN = function(subset){extract_comb(UpsetData_SIGN_Time_FilClus, subset)}))
+colnames(Subsets) <- c("Genes", "Subset")
+UpsetData_COMB_Time_FilClus <- left_join(x = UpsetData_COMB_Time_FilClus%>%
+                              rownames_to_column(var = "Genes"),
+                            y = Subsets,
+                            by = "Genes")%>%
+  mutate(Direction = factor(Direction, levels = c("MIXED", "UP", "DOWN"),
+                               ordered = T))
+
+# Store the table of the distinct directions
+UpsetData_COMB_Time_FilClus.table<-table(UpsetData_COMB_Time_FilClus$Subset,
+                            UpsetData_COMB_Time_FilClus$Direction)
+
+# Generation of the plot
+UpSet(UpsetData_SIGN_Time_FilClus, comb_order = order(comb_size(UpsetData_SIGN_Time_FilClus), decreasing = T),
+      comb_col = "#595B5C", bg_pt_col = "white",
+      column_title = "Overlap significant DE genes",
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_SIGN_Time_FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      top_annotation = HeatmapAnnotation(
+                "Intersection size" = anno_barplot(comb_size(UpsetData_SIGN_Time_FilClus),
+                                                   border = FALSE,
+                                                   gp = gpar(fill = "#595B5C",
+                                                             lty = "blank"), 
+                                                   add_numbers = T,
+                                                   height = unit(4, "cm")),
+                annotation_name_side = "left",
+                annotation_name_rot = 90))
+```
+
+```{r UpsetPlot_IncubationTime_PlotGeneration}
+### PLOTTING THE DATA USING UPSET PLOT OF COMPLEX HEATMAP ###
+# Generate upset plot
+upPlot_Time<-
+  UpSet(UpsetData_SIGN_Time_FilClus, comb_order = order(comb_size(UpsetData_SIGN_Time_FilClus), decreasing = T),
+      #  Colors of the dots and balkjes onderaan 
+      comb_col = "#595B5C", bg_pt_col = "white",
+      # Add plot title
+      column_title = "Overlap significant DE genes",
+      # Update column annotation (entire set of DEgenes)
+      right_annotation = rowAnnotation(
+                "DE genes" = anno_barplot(set_size(UpsetData_SIGN_Time_FilClus),
+                                          border = FALSE,
+                                          gp = gpar(fill = "#595B5C",
+                                                    lty = "blank"), 
+                                          add_numbers = T,
+                                          width = unit(4, "cm"))),
+      # Update row annotation on top of the Upset plot
+      top_annotation = HeatmapAnnotation(
+                                      # Add barplot based on the direction of the DE genes
+                "Intersection size" = anno_barplot(UpsetData_COMB_Time_FilClus.table,
+                                                   border = FALSE,
+                                                   # Store correct colors
+                                                   gp = gpar(fill = colDirection[colnames(
+                                                     UpsetData_COMB_Time_FilClus.table)],
+                                                             lty = "blank"),
+                                                   add_numbers = T,
+                                                   height = unit(3, "cm")),
+                # Annotation name shown at the left side
+                annotation_name_side = "left",
+                # Rotation of the annotation at the left side
+                annotation_name_rot = 90))
+
+# Generate legend
+lgd = Legend(
+  labels    = colnames(UpsetData_COMB_Time_FilClus.table),
+  legend_gp = gpar(fill = colDirection[colnames(UpsetData_COMB_Time_FilClus.table)]),
+  title     = "Direction"
+)
+
+# Visualise the upset plot
+pdf(file.path(params$path_Results, 
+              "DEGAnalysis", 
+              paste0(params$date, "Upset_SignDEGenes_Stim_vs_Unstim_8h.pdf")), width=7, height=4)
+draw(upPlot_Time,
+     annotation_legend_list = list(lgd),
+     annotation_legend_side = "left")
+dev.off()
+```
+
+# Hypergeometric testing in pathway enrichment
+
+Statistical testing of the enrichment of specific gene sets within the unique or overlapping genes will be performed using a hypergeometric statistical testing (HGT) approach. Under the hood, it is actually similar to the one-sided Fisher's exact test based on the contingency table between genes present or absent in the gene set of interest. More information in this [video](https://www.youtube.com/watch?v=bN2OakOqOQI&list=PL1TwkRAGtllLe_bhend9-dzKToOxLuObm).
+
+The approach followed is described [here](https://montilab.github.io/BS831/articles/docs/HyperEnrichment.html) and written down in more detail in my notes (see Remarkable). This part is adapted from the original code written in script `011_DEGenes_Visualisation_GSEAOverlap.Rmd`. The tested subset of significant genes are split into a down- and a upregulated subset to test for pathway down or upregulation, respectively.
+
+## Interesting gene sets
+The gene sets of interest were obtained via the MSig database and based on multiple articles such as
+
+- https://www.frontiersin.orghttps://www.frontiersin.org/journals/immunology/articles/10.3389/fimmu.2021.602539/full
+- https://www.gsea-msigdb.org/gsea/msigdb/human/collections.jsp#C8
+
+Two gene sets are used that could be of interest for this analysis
+
+- MSigDB, category 5: Gene ontology gene sets (subcategory Biological Processes)
+- MSigDB, category 7: Immunologic signature gene sets (not included here yet)
+
+**Note**: Only genes that are present in our dataset can be present in the gene sets which we are using as a reference for the hypergeometric testing. Therefore, genes that are in the subset but not in our database are also deleted from the gene subset.
+
+```{r GeneSetExtraction}
+# Gene ontology - Biological processes
+GeneSets_GO_BP<-msigdbr(species = "Homo sapiens", category = "C5", subcategory = "BP")%>%
+  # Select only the columns of interest for downstream analysis
+  select(gs_name, gene_symbol, gs_description)
+
+# Select only the genes that are present in our dataset
+GeneSets_GO_BP<-GeneSets_GO_BP%>%
+  filter(gene_symbol %in% DEG_Time_Stim_FilClus$IFNgamma[["Gene"]])
+
+dim(GeneSets_GO_BP)
+```
+
+## Final testing per subset of genes based on upset plot
+
+In this part, the final gene set enrichment of the distinct DEG subsets using the Gene Ontology Biological Processes is performed using the hypergeometric testing approach.
+
+### Genes related to incubation time per stimulation
+
+A distinguishment is made between upregulated and downregulated genes to obtain pathways that are upregulated and downregulated in specific conditions.
+```{r IncubTime_HGT_ExtractGenesOverlap_UpReg}
+DEG_IncubTime<-list()
+
+# UPREGULATED GENES
+# Unique subsets
+DEG_IncubTime[["IFNG_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "10000", !is.na(IFNgamma_UP)))[,"Genes"]
+DEG_IncubTime[["MegaCD40L_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "01000", !is.na(MegaCD40L_UP)))[,"Genes"]
+DEG_IncubTime[["ODN2006_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "00100", !is.na(ODN2006_UP)))[,"Genes"]
+DEG_IncubTime[["CD3CD28_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "00010", !is.na(`CD3/CD28_beads_UP`)))[,"Genes"]
+DEG_IncubTime[["Unstimulated_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "00001", !is.na(`Unstimulated_UP`)))[,"Genes"]
+
+# Overlapping subsets of interest (Only the upregulated genes are taken into account)
+DEG_IncubTime[["IFNG_ODN_CD3CD8_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "10110", Direction == "UP"))[,"Genes"]
+DEG_IncubTime[["ALL_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "11110", Direction == "UP"))[,"Genes"]
+DEG_IncubTime[["ALL_Unstim_UP"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "11111", Direction == "UP"))[,"Genes"]
+
+# DOWNREGULATED GENES
+# Unique subsets
+DEG_IncubTime[["IFNG_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "10000", !is.na(IFNgamma_DOWN)))[,"Genes"]
+DEG_IncubTime[["MegaCD40L_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "01000", !is.na(MegaCD40L_DOWN)))[,"Genes"]
+DEG_IncubTime[["ODN2006_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "00100", !is.na(ODN2006_DOWN)))[,"Genes"]
+DEG_IncubTime[["CD3CD28_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "00010", !is.na(`CD3/CD28_beads_DOWN`)))[,"Genes"]
+DEG_IncubTime[["Unstimulated_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "00001", !is.na(`Unstimulated_DOWN`)))[,"Genes"]
+# Overlapping subsets of interest (Only the upregulated genes are taken into account)
+DEG_IncubTime[["IFNG_ODN_CD3CD8_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "10110", Direction == "DOWN"))[,"Genes"]
+DEG_IncubTime[["ALL_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "11110", Direction == "DOWN"))[,"Genes"]
+DEG_IncubTime[["ALL_Unstim_DOWN"]]<-(UpsetData_COMB_Time_FilClus%>%filter(Subset == "11111", Direction == "DOWN"))[,"Genes"]
+```
+
+```{r IncubTime_Phyper_HGT_GOSets}
+# Save the total number of genes in the entire dataset
+totalGeneNumber<-length(DEG_Time_Stim_FilClus$IFNgamma$Gene)
+
+# Initialization of dataframe
+GSE_HGT_GO_BP_IncubTime <- as.data.frame(matrix(nrow=length(unique(GeneSets_GO_BP$gs_name)),ncol=1))
+GSE_HGT_GO_BP_IncubTime$GeneSet <-unique(GeneSets_GO_BP$gs_name)
+GSE_HGT_GO_BP_IncubTime <- GSE_HGT_GO_BP_IncubTime%>%column_to_rownames(var = "GeneSet")
+
+
+# For-loop over the pathways of interest
+for (pathway in GSE_HGT_GO_BP_IncubTime%>%rownames()){
+  # Extract the genes of the pathway of interest
+  pathway.genes<-(GeneSets_GO_BP%>%filter(gs_name == pathway))[['gene_symbol']]
+  
+  # For-loop over the distinct subsets
+  for(subset.name in names(DEG_IncubTime)){
+           # Initialization of names
+           overlap.var<-paste("Overlap",subset.name, sep = "_")
+           overlap.pval<-paste("pval", subset.name, sep = "_")
+           # Extract subset of interest
+           subset<-DEG_IncubTime[[subset.name]]
+           # Check overlap + store in the final dataframe
+           overlap<-length(intersect(pathway.genes, subset))
+           GSE_HGT_GO_BP_IncubTime[pathway, overlap.var]<-overlap
+           
+           # Perform hypergeometric testing
+           GSE_HGT_GO_BP_IncubTime[pathway, overlap.pval]<-phyper(q = overlap - 1,
+                                                       m = length(pathway.genes),
+                                                       n = totalGeneNumber-length(pathway.genes),
+                                                       k = length(subset),
+                                                       lower.tail = F)
+           }
+}
+
+# Remove the unnecessary columns
+GSE_HGT_GO_BP_IncubTime[["V1"]]<-NULL
+```
+
+```{r IncubTime_Phyper_HGT_MultipleTestingCorrection_GOSets}
+# Multiple testing correction with Benjamini Hochberg
+for(col in grep(pattern = "^pval", x = names(GSE_HGT_GO_BP_IncubTime), value = T)){
+  new_colname <- paste0('adj', col)
+  GSE_HGT_GO_BP_IncubTime[,new_colname] <- p.adjust(GSE_HGT_GO_BP_IncubTime[,col], method = "BH")
+}
+
+GSE_HGT_GO_BP_IncubTime%>%head()
+```
+
+```{r IncubTime_Phyper_HGT_Vis_Pval_Overview, fig.width=8, fig.height=7}
+print("GO gene sets")
+sapply(X = grep(pattern = "adjpval", x = names(GSE_HGT_GO_BP_IncubTime), value = T),
+       FUN = function(subset){
+         sum(GSE_HGT_GO_BP_IncubTime[[subset]]<=0.05)
+       })
+```
+
+Visualization of the interesting enriched gene sets per stimulation (combination). 
+
+Bar plot of the adjusted p-values for the gene sets tested against the DE genes observed in all stimulatory conditions.
+
+```{r IncubTime_Phyper_HGT_Vis_Pval_Barplots, fig.width=15, fig.height=4}
+for (col in grep(pattern = "adjpval", x = names(GSE_HGT_GO_BP_IncubTime), value = T)){
+  plotData<-GSE_HGT_GO_BP_IncubTime%>%
+                 rownames_to_column(var = "GeneSet")%>%
+         select(GeneSet, col)%>%
+         filter(.data[[col]] <= 0.05)%>%
+         arrange(col)%>%
+         mutate(GeneSet=gsub(pattern = "GOBP_", replacement = "", x = GeneSet))
+
+  if(dim(plotData)[1] != 0){
+    plot<-ggplot(data = plotData%>%head(20),
+       mapping = aes(x = -log10(.data[[col]]), y = reorder(GeneSet, -.data[[col]]), 
+                     label = format(.data[[col]], scientific = T, digits = 3)))+
+    geom_col()+
+    xlim(c(0,NA))+
+    themeG+
+    theme(panel.grid.major = element_line(color = "grey95",
+                                    size = 0.5,
+                                    linetype = 1),
+          panel.grid.minor = element_line(color = "grey95",
+                                          size = 0.5,
+                                          linetype = 1),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())+
+    geom_text(x = 0.05,hjust = 0, color = "white", size = 3)+
+    labs(y = "GO Gene sets - Biological processes",
+         x = "-log10(adj. p-value)",
+         title = paste0("Enriched pathways based on subset ", gsub(pattern = "adjpval_", replacement = "", x = col)))
+   show(plot)
+  }
+}
+rm(plotData, plot)
+```
+
+
+### Top 20 DEGenes over the distinct approaches
+
+```{r Top20Genes}
+for (stim in names(DEG_Time_Stim_FilClus)){
+  top20genes <- head(DEG_Time_Stim_FilClus[[stim]]%>%
+                       filter(Annot != 'NS')%>%
+                         # The absolute value of the score is used in this case to also take into account possible downregulated genes
+                       arrange(abs(Score), descending = TRUE), 20)[,'Gene']
+  DEG_Time_Stim_FilClus[[stim]]<-DEG_Time_Stim_FilClus[[stim]]%>%
+    mutate(Top20=ifelse(DEG_Time_Stim_FilClus[[stim]]$Gene %in% top20genes,
+                        TRUE,FALSE))
+}
+rm(top20genes)
+
+# Overlap in top20 genes
+Top20_Time_Stim <- list("IFNgamma" = (DEG_Time_Stim_FilClus$IFNgamma%>%
+                                           filter(Top20))[, "Gene"], 
+                       "MegaCD40L" = (DEG_Time_Stim_FilClus$MegaCD40L%>%
+                                        filter(Top20))[, "Gene"], 
+                       "ODN2006" = (DEG_Time_Stim_FilClus$ODN2006%>%
+                                      filter(Top20))[, "Gene"],
+                       "CD3/CD28" = (DEG_Time_Stim_FilClus$`CD3/CD28_beads`%>%
+                                      filter(Top20))[, "Gene"])
+```
+
+
+```{r Top20SharedGenes_VennDiagram, fig.height=5, fig.width=15}
+# Extract the top 20 DEgenes, taking into account the direction of gene expression
+for (stim in names(DEG_Time_Stim_FilClus)){
+  top10Genes_UP <- head(DEG_Time_Stim_FilClus[[stim]]%>%
+                          # Only extract the top 10 of the upregulated genes
+                       filter(Annot == 'UP')%>%
+                       arrange(-Score), 10)[,'Gene']
+  top10Genes_DOWN <- head(DEG_Time_Stim_FilClus[[stim]]%>%
+                       filter(Annot == 'DOWN')%>%
+                         # Only extract the top 10 of the downregulated genes
+                       arrange(Score), 10)[,'Gene']
+  DEG_Time_Stim_FilClus[[stim]]<-DEG_Time_Stim_FilClus[[stim]]%>%
+    # Correctly annotate the genes
+    mutate(Top10=ifelse(DEG_Time_Stim_FilClus[[stim]]$Gene %in% top10Genes_UP,
+                        "UP",ifelse(DEG_Time_Stim_FilClus[[stim]]$Gene %in% top10Genes_DOWN, "DOWN", NA)))
+  
+  # Store only the top 10 down/upregulated genes in a dataframe
+  # First check if the dataframe is does exist or is empyt
+  if (!exists("DEG_Time_Stim_FilClus_Top10.df") || (dim(DEG_Time_Stim_FilClus_Top10.df)[1]) == 0){
+    message("Creating dataframe")
+    DEG_Time_Stim_FilClus_Top10.df <- DEG_Time_Stim_FilClus[[stim]] |>
+      filter(!is.na(Top10)) |>
+      # Chance the column name using the `stim` variable
+      mutate(!!stim := Top10) |>
+      select(Gene, !!stim)
+  } else {
+    message("\nJoining additional genes")
+    # Using full_join to add the other genes that were found in other stimulations
+    DEG_Time_Stim_FilClus_Top10.df <- full_join(x = DEG_Time_Stim_FilClus_Top10.df,
+                                                y = DEG_Time_Stim_FilClus[[stim]] |>
+                                                  filter(!is.na(Top10)) |>
+                                                  # Chance the column name using the `stim` variable
+                                                  mutate(!!stim := Top10) |>
+                                                  select(Gene, !!stim),
+                                                by = "Gene")
+  }
+}
+
+# Store as matrix as input for complex heatmap
+DEG_Time_Stim_FilClus_Top10.mat<-as.matrix(DEG_Time_Stim_FilClus_Top10.df|>
+                                             # Add rownames
+                                             column_to_rownames(var = "Gene")|>
+                                             # Change order of the columns
+                                             select(IFNgamma, ODN2006, MegaCD40L, `CD3/CD28_beads`,Unstimulated)|>
+                                             # Sort based on the conditions and gene expression direction
+                                             arrange(desc(IFNgamma), desc(ODN2006), desc(MegaCD40L), desc(`CD3/CD28_beads`),
+                                                     desc(Unstimulated)))
+                                             
+# Generate heatmap of top 20 genes
+Heatmap(t(DEG_Time_Stim_FilClus_Top10.mat), 
+        name = "Expression direction", 
+        col = colDirection,
+        column_title = "Top20Genes per condition - 8h vs 30h",
+        row_names_side = "left", column_names_side = "top",
+        na_col = "grey95")
+```
+
+#### NCBI information scraping
+
+To link information to the gene of interest based on the NCBI database, a data scraping step is performed using the `rentrez` R package. The following links contain necessary examples, vignettes and explanation on how this is properly performed
+
+- https://bioconnector.github.io/workshops/r-ncbi.html
+
+```{r FunctionExtractData_Entrez}
+for (gene in rownames(DEG_Time_Stim_FilClus_Top10.mat)){
+  # Get the gene ids based on the NCBI database
+  gene_ids<-entrez_search(db = "gene", term  = paste0(gene, "[Gene] AND Homo Sapiens[Organism]"))
+  # Fetch the necessary data based on the extracted gene_ids
+  for (ids in gene_ids$ids){
+    # Stored as docsum
+    gene_info.docsum<-entrez_fetch(db = "gene", id = ids, rettype = "docsum")
+    # Get the data in an interesting format
+    gene_info.df<-data.frame(OGInfo=strsplit(x = gene_info.docsum, split = '\n')|>
+      unlist())|>
+      filter(grepl(OGInfo, pattern = paste(c("<Name>", "<Description>", "<Summary>"), collapse = "|")))|>
+      # Remove the tabs
+      mutate(OGInfo = gsub(pattern = "\t", replacement = "", x = OGInfo))|>
+      mutate(Gene = gene,
+             Key = lapply(X = OGInfo, FUN = function(x){strsplit(x = x, split = "<|>|</")[[1]][2]})%>%
+               unlist(),
+             Value = lapply(X = OGInfo, FUN = function(x){strsplit(x = x, split = "<|>|</")[[1]][3]})%>%
+               unlist())|>
+      dplyr::select(-OGInfo)|>
+      pivot_wider(names_from = Key,
+                  values_from = Value)
+    
+    # Concatenate all the information on the genes of interest
+    if (gene_info.df$Summary=="") {
+      # If no additional information is added, the data is not concatenated to the dataframe
+      break
+      } else if (!exists("DEG_Time_Stim_FilClus_Top10.info") || (dim(DEG_Time_Stim_FilClus_Top10.info)[1]) == 0){
+      message("Creating dataframe")
+      DEG_Time_Stim_FilClus_Top10.info <- gene_info.df
+      } else {
+      message("\nJoining dataframes")
+      # Using full_join to add the other genes that were found in other stimulations
+      DEG_Time_Stim_FilClus_Top10.info <- rbind(DEG_Time_Stim_FilClus_Top10.info,
+                                                y = gene_info.df)
+    }
+  }
+}
+
+# Saving the final dataset
+write.xlsx(DEG_Time_Stim_FilClus_Top10.info, file.path(params$path_Results, "DEGAnalysis", paste0(params$date2, 
+                                                        "_Info_Top20DEGenes_IncubTime_8vs30.xlsx")))
+```
+
+#### Dotplot average expression of the top 20 genes
+
+```{r IncubTime_Heatmap_Top20Genes, fig.width=15, fig.height=5}
+# Grouping based on Stimulation
+Idents(IntData.B_8h.FilCus)<-"Stimulation"
+Idents(IntData.B_30h.FilCus)<-"Stimulation"
+
+DotPlot_MultipleFeat(object = IntData.B_8h.FilCus, metaData = "Stimulation",
+                     numSorting = F, features = rownames(DEG_Time_Stim_FilClus_Top10.mat))+
+  ggtitle("8 hours of stimulation")
+
+DotPlot_MultipleFeat(object = IntData.B_30h.FilCus, metaData = "Stimulation",
+                     numSorting = F, features = rownames(DEG_Time_Stim_FilClus_Top10.mat))+
+  ggtitle("30 hours of stimulation")
+```
+
+
+## Final testing per stimulation
+
+```{r IncubTime_Phyper_HGT_GOSets_PerStim}
+# Save the total number of genes in the entire dataset
+totalGeneNumber<-length(DEG_Time_Stim_FilClus$IFNgamma$Gene)
+
+# Initialization of dataframe
+GSE_HGT_GO_BP_IncubTime.Stim <- as.data.frame(matrix(nrow=length(unique(GeneSets_GO_BP$gs_name)),ncol=1))
+GSE_HGT_GO_BP_IncubTime.Stim$GeneSet <-unique(GeneSets_GO_BP$gs_name)
+GSE_HGT_GO_BP_IncubTime.Stim <- GSE_HGT_GO_BP_IncubTime.Stim%>%column_to_rownames(var = "GeneSet")
+
+
+# For-loop over the pathways of interest
+for (pathway in GSE_HGT_GO_BP_IncubTime.Stim%>%rownames()){
+  # Extract the genes of the pathway of interest
+  pathway.genes<-(GeneSets_GO_BP%>%filter(gs_name == pathway))[['gene_symbol']]
+  
+  # For-loop over the distinct subsets
+  for(stim in names(DEG_Time_Stim_FilClus)){
+           # Initialization of names
+           overlapUP.var<-paste("Overlap",stim, "UP", sep = "_")
+           overlapUP.pval<-paste("pval", stim, "UP", sep = "_")
+           overlapDOWN.var<-paste("Overlap",stim, "DOWN", sep = "_")
+           overlapDOWN.pval<-paste("pval", stim, "DOWN", sep = "_")
+           # Extract subset of interest
+           subsetUP<-(DEG_Time_Stim_FilClus[[stim]]%>%
+             filter(Annot == "UP"))[["Gene"]]
+           subsetDOWN<-(DEG_Time_Stim_FilClus[[stim]]%>%
+             filter(Annot == "DOWN"))[["Gene"]]
+           # Check overlap + store in the final dataframe
+           overlapUP<-length(intersect(pathway.genes, subsetUP))
+           GSE_HGT_GO_BP_IncubTime.Stim[pathway, overlapUP.var]<-overlapUP
+           overlapDOWN<-length(intersect(pathway.genes, subsetDOWN))
+           GSE_HGT_GO_BP_IncubTime.Stim[pathway, overlapDOWN.var]<-overlapDOWN
+           
+           # Perform hypergeometric testing for upregulated genes
+           GSE_HGT_GO_BP_IncubTime.Stim[pathway, overlapUP.pval]<-phyper(q = overlapUP - 1,
+                                                       m = length(pathway.genes),
+                                                       n = totalGeneNumber-length(pathway.genes),
+                                                       k = length(subsetUP),
+                                                       lower.tail = F)
+           # Perform hypergeometric testing for downregulated genes
+           GSE_HGT_GO_BP_IncubTime.Stim[pathway, overlapDOWN.pval]<-phyper(q = overlapDOWN - 1,
+                                                       m = length(pathway.genes),
+                                                       n = totalGeneNumber-length(pathway.genes),
+                                                       k = length(subsetDOWN),
+                                                       lower.tail = F)
+           }
+}
+
+# Remove the unnecessary columns
+GSE_HGT_GO_BP_IncubTime.Stim[["V1"]]<-NULL
+```
+
+```{r IncubTime_Phyper_HGT_MultipleTestingCorrection_GOSets_PerStim}
+# Multiple testing correction with Benjamini Hochberg
+for(col in grep(pattern = "^pval", x = names(GSE_HGT_GO_BP_IncubTime.Stim), value = T)){
+  new_colname <- paste0('adj', col)
+  GSE_HGT_GO_BP_IncubTime.Stim[,new_colname] <- p.adjust(GSE_HGT_GO_BP_IncubTime.Stim[,col], method = "BH")
+}
+
+GSE_HGT_GO_BP_IncubTime.Stim%>%head()
+```
+
+```{r IncubTime_Phyper_HGT_Vis_Pval_Overview, fig.width=8, fig.height=7}
+print("GO gene sets")
+sapply(X = grep(pattern = "adjpval", x = names(GSE_HGT_GO_BP_IncubTime.Stim), value = T),
+       FUN = function(subset){
+         sum(GSE_HGT_GO_BP_IncubTime.Stim[[subset]]<=0.05)
+       })
+```
+
+Visualization of the interesting enriched gene sets per stimulation (combination). 
+
+Bar plot of the adjusted p-values for the gene sets tested against the DE genes observed in all stimulatory conditions.
+
+```{r IncubTime_Phyper_HGT_Vis_Pval_Barplots, fig.width=15, fig.height=4}
+for (col in grep(pattern = "adjpval", x = names(GSE_HGT_GO_BP_IncubTime.Stim), value = T)){
+  plotData<-GSE_HGT_GO_BP_IncubTime.Stim%>%
+                 rownames_to_column(var = "GeneSet")%>%
+         select(GeneSet, col)%>%
+         filter(.data[[col]] <= 0.05)%>%
+         arrange(col)%>%
+         mutate(GeneSet=gsub(pattern = "GOBP_", replacement = "", x = GeneSet))
+
+  if(dim(plotData)[1] != 0){
+    plot<-ggplot(data = plotData%>%head(20),
+       mapping = aes(x = -log10(.data[[col]]), y = reorder(GeneSet, -.data[[col]]), 
+                     label = format(.data[[col]], scientific = T, digits = 3)))+
+    geom_col()+
+    xlim(c(0,NA))+
+    themeG+
+    theme(panel.grid.major = element_line(color = "grey95",
+                                    size = 0.5,
+                                    linetype = 1),
+          panel.grid.minor = element_line(color = "grey95",
+                                          size = 0.5,
+                                          linetype = 1),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())+
+    geom_text(x = 0.05,hjust = 0, color = "white", size = 3)+
+    labs(y = "GO Gene sets - Biological processes",
+         x = "-log10(adj. p-value)",
+         title = paste0("Enriched pathways based on subset ", gsub(pattern = "adjpval_", replacement = "", x = col)))
+   show(plot)
+  }
+}
+rm(plotData, plot)
+```
+
+
+```{r IncubTime_GSEA_PerStim_Heatmap, fig.height=20, fig.width=15}
+# Extracting the most interesting gene sets based on the top 20 per subset
+for (stim_dir in grep(pattern = "adjpval", x = names(GSE_HGT_GO_BP_IncubTime.Stim), value = T)){
+  top20GSE.Stim <- head(GSE_HGT_GO_BP_IncubTime.Stim%>%
+                          # Only extract the top 10 of the upregulated genes
+                       arrange(.data[[stim_dir]]), n = 10)%>%rownames
+  
+  # Store only the top 10 down/upregulated genes in a dataframe
+  # First check if the dataframe is does exist or is empyt
+  if (!exists("top20GSE.total") || length(top20GSE.total) == 0){
+    message("Creating vector")
+    top20GSE.total <- top20GSE.Stim
+  } else {
+    message("\nJoining additional gene sets")
+    # Adding additional genes if they are not yet present in the top20GSE list
+   top20GSE.total <- unique(c(top20GSE.total, top20GSE.Stim))
+  }
+}
+
+# Extracting plot matrix necessary for heatmap generation
+plotData <- (GSE_HGT_GO_BP_IncubTime.Stim[top20GSE.total,]%>%
+  select(starts_with("adjpval"))%>%
+  as.matrix()%>%
+  log10())*(-1)
+rownames(plotData)<-gsub(x = rownames(plotData), pattern = "GOBP_", replacement = "")
+
+# Plot the heatmap
+Heatmap(matrix = plotData,
+        row_names_side = "left", column_names_side = "top",
+        show_row_dend = F, show_column_dend = F, 
+        row_dend_reorder = T, column_dend_reorder = T,
+        row_names_gp = gpar(fontsize = 7),
+        row_names_rot = -45)
+```
