@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+#PBS -l nodes=1:ppn=8
+#PBS -l walltime=50:00:00
+#PBS -l mem=70gb
+
+# Load the necessary modules
+module load Nextflow/22.10.5
+
+# Change to correct working directory
+cd /kyukon/data/gent/vo/000/gvo00027/TOBI/CVID/Scripts/scCITEAnalysis/NF_Pipeline/
+
+# Run nextflow pipeline with correct config file
+export _JAVA_OPTIONS="-Xmx1g" 
+nextflow run scCITE_NF_CVID.nf -config scCITE_NF_CVID.config -dsl1 -resume

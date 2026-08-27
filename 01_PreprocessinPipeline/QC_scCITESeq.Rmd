@@ -1,0 +1,1847 @@
+---
+title: "Analysis Data QC scCITE"
+author: "Tine D'hamers"
+date: "2023-03-09"
+output:
+  html_document:
+    theme: cosmo
+    highlight: textmate
+    df_print: paged
+    toc: true
+    toc_depth: 2
+params:
+  projectName:
+    value: 'CVIDPatients_scCITESeq_ShallowDepth'
+  sampleName:
+    value: 'CEV023' 
+  pathFiles:
+    value: '/scratch/gent/vo/000/gvo00027/TOBI/Projects/CVID/Results/scCITE/Exp_Nov2023_PatientSamples_CEV23-26/ShallowDepthSeq_202311/NF_OutputData/CEV023/cellranger/CVIDPatients_scCITESeq_ShallowDepth_CEV023/outs'
+  pathFiles_freemuxlet:
+    value: '/scratch/gent/vo/000/gvo00027/TOBI/Projects/CVID/Results/scCITE/Exp_Nov2023_PatientSamples_CEV23-26/ShallowDepthSeq_202311/NF_OutputData/CEV023/freemuxlet/CEV023_freemuxletout'
+  annotation_file:
+    value: '/kyukon/data/gent/vo/000/gvo00027/TOBI/CVID/Data/scCITE/Exp_Nov2023_PatientSamples_CEV23-26/ShallowDepthSeq_202311/NF_OutputData/SampleInformation/20240104_SampleAnnotation_CVIDPatients.txt'
+  features: 
+    value: "CD80.1,CD86.1,CD40.1,CD3,CD3.1,CD8,CD8a,CD27.1,CD27.2,IgM,IgD,CD45RB,CD45RA,IgG1-k,IgG2a-k,IgG2b-k,IgG-Fc,CD38.1,CD38.2,CD19.1"
+  outputDir:
+    value: "/scratch/gent/vo/000/gvo00027/TOBI/Projects/CVID/Results/scCITE/Exp_Nov2023_PatientSamples_CEV23-26/ShallowDepthSeq_202311/QCReports"
+---
+
+# Sample `r params$sampleName`
+
+## Initialise the working directory
+
+```{r Variables}
+# Specify the name of the sample and save it as the variable ‘sampleName’
+projectName <- params$projectName
+sampleName <- params$sampleName
+# Output files of Cellranger process
+pathFiles <- params$pathFiles
+# Output files of freemuxlet process
+pathFiles_freemuxlet <- params$pathFiles_freemuxlet
+# Annotation file contains sample information
+annotation_file <- params$annotation_file
+genesets_visualise <- "/data/gent/vo/000/gvo00027/SingleCell10X/seuratintegrate/GeneSets/h.all.v7.1.symbols.gmt"
+marker_genes_visualise <- "/data/gent/vo/000/gvo00027/SingleCell10X/seuratintegrate/GeneSets/markers.csv"
+featuresADT <- unlist(strsplit(params$features,","))
+```
+
+### Create output dirs
+
+```{r CreateOutDir,message=FALSE,warning=FALSE,tidy=TRUE}
+##add some subfolders
+output_dir_results <- file.path(params$outputDir, sampleName)
+output_dir_results_qc <- paste0(output_dir_results,"/QC")
+output_dir_robjects <- paste0(output_dir_results,"/Robjects")
+dir.create(output_dir_results,recursive=TRUE)
+dir.create(output_dir_results_qc,recursive=TRUE)
+dir.create(output_dir_robjects,recursive = TRUE)
+```
+
+## Load packages
+
+```{r SetupLibraries, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(RColorBrewer)
+library(Rtsne)
+library(sva)
+library(Seurat)
+library(cowplot)
+library(gridExtra)
+library(scater)
+library(patchwork)
+library(biomaRt)
+library(tximport)
+library('openxlsx')
+library("SeuratDisk",
+          lib.loc = "/kyukon/data/gent/vo/000/gvo00027/SingleCell10X/seuratintegrate/Rpackages/R_4.2.1-foss-2022a/")
+library(ggpubr)
+#library(DoubletFinder)
+```
+
+```{r LoadPlotScript}
+source("/data/gent/vo/000/gvo00027/SingleCell10X/nextflowpipeline/NF_scRNAseq/plotColors.R")
+source("/kyukon/data/gent/vo/000/gvo00027/TOBI/CVID/Scripts/PlotThemes_sc_CVID.R")
+source("/kyukon/data/gent/vo/000/gvo00027/TOBI/CVID/Scripts/Functions_sc_CVID.R")
+```
+
+## Read in data
+
+```{r AnnotationFile}
+# Annotation regarding the samples 
+annotation <- read_tsv(annotation_file)
+# Link correct color to correct annotation
+# NOT NECESSARY TO ADJUST--> see PlotThemes_sc_CVID.R script
+# names(colorsStim)<-annotation$Stimulation%>%unique()%>%sort()
+# colorsPatients<-colorsPatients[1:length(annotation$PatientID%>%unique())]
+# names(colorsPatients)<-annotation$PatientID%>%unique()%>%sort()
+
+# Extract information only related to the pool of interest
+annotation_sample <- annotation %>% 
+  filter(SampleID == sampleName)
+```
+
+```{r ReadCellRangerData}
+# Directory contains files:
+# barcodes.tsv.gz
+# features.tsv.gz
+# matrix.mtx.gz
+cellranger_data <- Read10X(data.dir = paste0(pathFiles,
+                                             "/per_sample_outs/",
+                                             projectName, "_", sampleName,
+                                             "/count/sample_filtered_feature_bc_matrix"),
+                           # Remove tailing "-1" if present in all cell barcodes
+                           strip.suffix=TRUE)
+
+```
+
+## Create Seurat Object
+
+### Create seurat
+
+```{r CreateSeurat}
+# Cells in columns (cell barcodes)
+# Features in rows (genes)
+seuratObj <- CreateSeuratObject(counts = cellranger_data$`Gene Expression`,
+                                project = projectName)
+```
+
+The sample has `r nrow(seuratObj)` genes and `r ncol(seuratObj)` cells.
+
+### Add annotation
+
+```{r AnnotationSeurat}
+# Add extra information to samples in metadata of Seurat object
+seuratObj[["Full_samplename"]] <- paste0(projectName,"_",sampleName)
+seuratObj[["samplename"]] <- sampleName
+```
+
+The sample has `r table(seuratObj@meta.data$orig.ident)` cells of sample `r rownames(table(seuratObj@meta.data$orig.ident))`
+
+## QC with Seurat
+
+### Create QC table
+
+```{r CreateQCTable}
+# Building data frame
+qc_df <- tibble(qc_stats = "number of cells prefiltered",
+                values= table(seuratObj@meta.data$orig.ident)[1])
+```
+
+### Calculated mitochondrial genes
+
+Mitochondrial (MT) genes are present in the index, so quantification of MT genes is possible. The percentage of MT genes needs to be low. High percentages of MT genes can be an indication of damaged cells.
+
+```{r MTGenes, message=FALSE, warning=FALSE,tidy=T}
+#Calculate percent mitochondrial genes (MT for human, mt for mouse/Zebrafish)
+seuratObj[["percent_mito"]] <- PercentageFeatureSet(object = seuratObj, 
+                                                    pattern = "^MT")
+# Add to QCTable
+qc_df <- qc_df %>% 
+  bind_rows(list(qc_stats = "mean mitochondrial percentage prefiltered", 
+                 values = mean(seuratObj@meta.data$percent_mito)), 
+            list(qc_stats = "median mitochondrial percentage prefiltered",
+                 values = median(seuratObj@meta.data$percent_mito)),
+            list(qc_stats = "mean nFeature RNA prefiltered", 
+                 values = mean(seuratObj@meta.data$nFeature_RNA)), 
+            list(qc_stats = "median nFeature RNA prefiltered", 
+                 values= median(seuratObj@meta.data$nFeature_RNA)),
+            list(qc_stats = "mean nCount RNA prefiltered", 
+                 values = mean(seuratObj@meta.data$nCount_RNA)), 
+            list(qc_stats = "median nCount RNA prefiltered", 
+                 values= median(seuratObj@meta.data$nCount_RNA)))
+```
+
+### Plot QC features {.tabset .tabset-fade .tabset-pills}
+
+#### All features
+
+```{r PlotAllFeatures, message=FALSE, warning=FALSE,tidy=T}
+# Use Violin plot function from external script
+VlnfeaturePlot(seuratObj, c("nFeature_RNA","nCount_RNA","percent_mito"))+
+  ylim(0,NA)+
+  theme(axis.text.x = element_blank())+
+  ylab("Value")
+# Save as pdf
+ggsave(filename = "Violin_features_beforenorm_adjTrans.pdf", 
+       path= output_dir_results_qc, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Violin_features_beforenorm_adjTrans.jpeg", 
+       path= output_dir_results_qc, 
+       width = 20, device = "jpeg")
+```
+
+#### nCount vs mito%
+
+Every dot represents one cell. Per cell, the total number of RNA molecules detected in that cell is presented on the horizontal axis and the percentage of mitochondrial genes detected in that cell is presented on the vertical axis. Cells characterized by low percentages in mitochondrial genes and high amounts of RNA molecules are preferred. Cells with low number of RNA molecules and high percentages of mitochondrial genes are most likely damaged cells.
+
+```{r ScatternCountMito, message=FALSE, warning=FALSE,tidy=T}
+scatterplotseurat(seuratObj, xfeature = "nCount_RNA", 
+                  yfeature = "percent_mito")+
+  ggtitle("%mito vs. RNA counts")+
+  theme_celine
+# Save as pdf
+ggsave(filename = "Scatter_nCount_mito.pdf", 
+       path= output_dir_results_qc, 
+       width = 10, height = 7, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Scatter_nCount_mito.jpeg", 
+       path= output_dir_results_qc, 
+       width = 10, height = 7, device = "jpeg")
+```
+
+#### nCounts vs nFeatures
+
+Every dot represents one cell. Per cell, the total number of RNA molecules detected in that cell is presented on the horizontal axis and the total number of unique genes detected in that cell is presented on the vertical axis.
+
+```{r ScatternCountsnFeatures, message=FALSE, warning=FALSE,tidy=T}
+scatterplotseurat(seuratObj, xfeature = "nCount_RNA", 
+                  yfeature = "nFeature_RNA")+
+  ggtitle("Unique RNAs vs. RNA counts")+
+  theme_celine
+# Save as pdf
+ggsave(filename = "Scatter_nCount_nUMI.pdf", 
+       path= output_dir_results_qc, 
+       width = 10, height = 7, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Scatter_nCount_nUMI.jpeg", 
+       path= output_dir_results_qc, 
+       width = 10, height = 7, device = "jpeg")
+```
+
+## Preprocessing
+
+### Filter Cells
+
+```{r FilterCells}
+# Thresholds for cells of interest (intact, not damaged)
+seuratObj <- subset(seuratObj, 
+                    subset = nFeature_RNA > 200 & percent_mito < 25)
+```
+
+```{r qcUpdate1}
+qc_df <- qc_df %>% 
+  bind_rows(list(qc_stats = "mean mitochondrial percentage postfiltered", 
+                 values = mean(seuratObj@meta.data$percent_mito)), 
+            list(qc_stats = "median mitochondrial percentage postfiltered",
+                 values = median(seuratObj@meta.data$percent_mito)),
+            list(qc_stats = "mean nFeature RNA postfiltered", 
+                 values= mean(seuratObj@meta.data$nFeature_RNA)), 
+            list(qc_stats = "median nFeature RNA postfiltered", 
+                 values= median(seuratObj@meta.data$nFeature_RNA)),
+            list(qc_stats = "mean nCount RNA postfiltered", 
+                 values= mean(seuratObj@meta.data$nCount_RNA)), 
+            list(qc_stats = "median nCount RNA postfiltered", 
+                 values= median(seuratObj@meta.data$nCount_RNA)),
+            list(qc_stats = "number of cells postfiltered",
+                 values = table(seuratObj@meta.data$orig.ident)[1]))
+```
+
+### Normalise RNA data
+
+Based on the normalization method of choice using the `NormalizeData` [Seurat function](https://satijalab.org/seurat/reference/normalizedata), different transformations of the data are possible:
+
+-   **LogNormalize**: Feature counts for each cell are divided by the total counts for that cell and multiplied by the scale.factor. This is then natural-log transformed using log1p.
+-   **CLR**: Applies a centered log ratio transformation
+-   **RC**: Relative counts: Feature counts for each cell are divided by the total counts for that cell and multiplied by the scale.factor. No log-transformation is applied. For counts per million (CPM) set scale.factor = 1e6
+
+Note: Using a log transformation can result in negative values
+
+```{r NormaliseData, message=FALSE, warning=FALSE,tidy=T}
+# Normalisation of the count data
+# Stored in seuratObj@assays$RNA@data
+seuratObj <- NormalizeData(object = seuratObj, 
+                           normalization.method = "LogNormalize", 
+                           scale.factor = 10000)
+
+# Columns are the different cells
+# Total number of RNA molecules detected (use normalized data)
+seuratObj[["nUMI"]] <- colSums(as.matrix(seuratObj[['RNA']]@data))
+
+# Apply function on columns of matrix (argument MARGIN=2)
+# Same as nFeature_RNA (look for number of unique genes expressed per cell)
+seuratObj[["nGene"]] <- apply(as.matrix(seuratObj[['RNA']]@data),
+                              2, function(x){sum(x>0)})
+
+# Plot violin plot
+VlnfeaturePlot(seuratObj, features=c("nUMI","nGene"))+
+  ylim(min(seuratObj[["nUMI"]], seuratObj[["nGene"]]),
+       max(seuratObj[["nUMI"]], seuratObj[["nGene"]]))+
+  ylab("Value")+
+  theme(axis.text.x = element_blank())
+# Save as pdf
+ggsave(filename = "Violin_nUMI_nGene_afternormalisation.pdf", 
+       path= output_dir_results_qc, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Violin_nUMI_nGene_afternormalisation.jpeg", 
+       path= output_dir_results_qc, 
+       width = 20, device = "jpeg")
+
+qc_df <- qc_df %>% 
+  bind_rows(list(qc_stats = "mean UMI postnormalised", 
+                 values = mean(seuratObj@meta.data$nUMI)), 
+            list(qc_stats = "median UMI postnormalised", 
+                 values = median(seuratObj@meta.data$nUMI)), 
+            list(qc_stats = "mean gene postnormalised", 
+                 values = mean(seuratObj@meta.data$nGene)), 
+            list(qc_stats = "median gene postnormalised", 
+                 values = median(seuratObj@meta.data$nGene)))
+
+```
+
+### Determine highly variable genes (used for downstream clustering)
+
+To find variable genes, the [Seurat function](https://satijalab.org/seurat/reference/findvariablefeatures) `FindVariableFeatures` can make use of three different selection methods to identify features that are outliers on a 'mean variability plot'.: 
+
+- **vst**: First, fits a line to the relationship of log(variance) and log(mean) using local polynomial regression (loess). Then standardizes the feature values using the observed mean and expected variance (given by the fitted line). Feature variance is then calculated on the standardized values after clipping to a maximum (see clip.max parameter). 
+- **mean.var.plot** (mvp): First, uses a function to calculate average expression (mean.function) and dispersion (dispersion.function) for each feature. Next, divides features into num.bin (deafult 20) bins based on their average expression, and calculates z-scores for dispersion within each bin. The purpose of this is to identify variable features while controlling for the strong relationship between variability and average expression. 
+- **dispersion** (disp): selects the genes with the highest dispersion values
+
+```{r HighlyVariableGenes, message=F, warning=F, tidy=T}
+seuratObj <- FindVariableFeatures(object = seuratObj, 
+                                  selection.method = "vst", 
+                                  # Top variable features to select
+                                  nfeatures = 2000)
+# Information is saved in seuratObj@assays[["RNA"]]@meta.features
+
+### Plot variable features with and without labels
+top10 <- head(x = VariableFeatures(object = seuratObj), 10)
+plot1 <- VariableFeaturePlot(object = seuratObj)
+# Labeling top 10 variable genes in plot
+plot2 <- LabelPoints(plot = plot1, 
+                     points = top10, repel = TRUE)+
+  theme_celine
+
+print(plot2)
+# Save as pdf
+ggsave(filename = "Highly_Variable_Genes.pdf", 
+       path= output_dir_results_qc, 
+       width = 10, height = 7, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Highly_Variable_Genes.jpeg", 
+       path= output_dir_results_qc, 
+       width = 10, height = 7, device = "jpeg")
+```
+
+Found `r length(VariableFeatures(seuratObj))` high variable genes!
+
+### Scaling RNA data
+
+The [Seurat function](https://satijalab.org/seurat/reference/scaledata) performs a gene-level scaling in which the counts of every feature will be centered to have a mean of 0 and scaled using the standard deviation as scaling factor. The number of UMI's can consequently show negative counts since features or genes showing counts less than the mean of all the counts for that gene will result in negative values afters centering. The number of unique genes will always be positive since we are calculating the number of genes with a count value higher than 0.
+
+```{r Scaling, message=FALSE, warning=FALSE,tidy=T}
+seuratObj <- ScaleData(object = seuratObj, features = rownames(seuratObj))
+
+##### Check per group #####
+# Columns are the different cells
+seuratObj[['nUMI_scaled']]<-colSums(as.matrix(seuratObj[['RNA']]@scale.data))
+seuratObj[['nGene_scaled']]<-apply(as.matrix(seuratObj[['RNA']]@scale.data),
+                                   2,function(x){sum(x>0)})
+
+VlnfeaturePlot(seuratObj, features=c("nUMI_scaled","nGene_scaled"))+
+  ylim(min(seuratObj[["nUMI_scaled"]], seuratObj[["nGene_scaled"]]),
+       max(seuratObj[["nUMI_scaled"]], seuratObj[["nGene_scaled"]]))+
+  theme(axis.text.x = element_blank())
+# Save as pdf
+ggsave(filename = "Violin_nUMI_nGene_afsterscaling.pdf", 
+       path= output_dir_results_qc, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Violin_nUMI_nGene_afsterscaling.jpeg", 
+       path= output_dir_results_qc, 
+       width = 20, device = "jpeg")
+
+qc_df <- qc_df %>% bind_rows(list(qc_stats = "mean UMI postscaling", 
+                                  values = mean(seuratObj@meta.data$nUMI_scaled)), 
+                             list(qc_stats = "median UMI postscaling", 
+                                  values = median(seuratObj@meta.data$nUMI_scaled)),
+                             list(qc_stats = "mean gene postscaling", 
+                                  values = mean(seuratObj@meta.data$nGene_scaled)),
+                             list(qc_stats = "median gene postscaling", 
+                                  values = median(seuratObj@meta.data$nGene_scaled)))
+```
+
+### Correlation UMIs and number of unique genes
+
+```{r}
+scatterplotseurat(seuratObj, xfeature = 'nGene',
+                  yfeature = 'nUMI')+
+  ggtitle("Before Scaling")+
+  theme_celine+
+  scatterplotseurat(seuratObj, xfeature = 'nGene_scaled',
+                    yfeature = 'nUMI_scaled')+
+  ggtitle("After scaling")+
+  theme_celine
+# Save as pdf
+ggsave(filename = "Scatter_nUMI_nGene_correlation.pdf", 
+       path= output_dir_results_qc, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Scatter_nUMI_nGene_correlation.jpeg", 
+       path= output_dir_results_qc, 
+       width = 20, device = "jpeg")
+```
+
+```{r}
+density_plot<-rbind(
+  data.frame(nUMI = seuratObj[['nUMI']],
+             nGene = seuratObj[["nGene"]],
+             scaled = "Before scaling")%>%
+  pivot_longer(cols = c(nUMI,nGene),
+               names_to = "Molecule",
+               values_to = "Counts"),
+  data.frame(nUMI_scaled = seuratObj[['nUMI_scaled']],
+             nGene_scaled = seuratObj[["nGene_scaled"]],
+             scaled = "After scaling")%>%
+  pivot_longer(cols = c(nUMI_scaled,nGene_scaled),
+               names_to = "Molecule",
+               values_to = "Counts")
+)
+
+colors<-rep(colorsHashtags[c(1,4)], times = 2)
+names(colors)<-c("Before scaling", "After scaling", "Before scaling", "After scaling")
+
+ggplot(data=density_plot%>%
+         filter(Molecule == "nUMI" |
+                  Molecule == "nUMI_scaled"),
+       mapping = aes(Counts, fill = scaled))+
+  # Before scaling
+  geom_density(alpha = 0.5)+
+  ylab("Density")+
+  xlab("nUMI")+
+  xlim(min(density_plot$Counts),NA)+
+  theme_celine+
+  scale_fill_manual(values = colors,
+                    name = "", 
+                    breaks = "")+
+  ggtitle("")+
+  theme(plot.title=element_text(hjust=0.5),
+        legend.position = "right")+
+  theme_celine+
+  # After scaling
+  ggplot(data=density_plot%>%
+         filter(Molecule == "nGene" |
+                  Molecule == "nGene_scaled"),
+       mapping = aes(Counts, fill = scaled))+
+  geom_density(alpha = 0.5)+
+  ylab("")+
+  xlab("nGene")+
+  theme_celine+
+  scale_fill_manual(values = colors,
+                    name = "", 
+                    breaks = c("Before scaling","After scaling"), 
+                    labels = c("Before", "After"))+
+  ggtitle("")
+
+# Save as pdf
+ggsave(filename = "Density_nUMI_nGene.pdf", 
+       path= output_dir_results_qc, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Density_nUMI_nGene.jpeg", 
+       path= output_dir_results_qc, 
+       width = 10, height = 10, device = "jpeg")
+
+rm(density_plot, colors)
+```
+
+## Demultiplexing
+
+### Extract cells with gene expression and antibody capture data
+
+```{r JointCellNames}
+# Look for cell both present in the gene expression and antibody capture data
+joint.cellnames <- intersect(rownames(seuratObj@meta.data),
+                             colnames(cellranger_data$`Antibody Capture`))
+```
+
+### Demultiplexing based on SNPs
+
+```{r Freemuxlet}
+freemuxlet_dt  <- read_tsv(paste0(pathFiles_freemuxlet,"/",
+                                  sampleName,"_freemuxlet.pooled.clust1.samples.gz"))
+
+freemuxlet_dt <- freemuxlet_dt %>% mutate(doublets = case_when(
+  # Extract the type of droplet
+  DROPLET.TYPE == "SNG" ~ "singlet",
+  DROPLET.TYPE == "DBL" ~ "double",
+  DROPLET.TYPE == "AMB" ~ "non-defined",
+), sample = case_when(
+  # Extract the best sample guess
+  BEST.GUESS == "1,1" ~ "sample1",
+  BEST.GUESS == "0,0" ~ "sample2",
+  BEST.GUESS == "2,2" ~ "sample3",
+  BEST.GUESS == "3,3" ~ "sample4",
+  BEST.GUESS == "4,4" ~ "sample5",
+  BEST.GUESS == "5,5" ~ "sample6"
+), cellbarcode = sub("-.*","", BARCODE)) %>% 
+  dplyr::select(cellbarcode, doublets, sample) %>% 
+  column_to_rownames("cellbarcode")
+
+# Add extra information in the meta data of the seurat object
+seuratObj@meta.data["FM_doublets"]<-freemuxlet_dt[joint.cellnames,"doublets"]
+seuratObj@meta.data["FM_sample"]<-freemuxlet_dt[joint.cellnames,"sample"]
+
+# Information related to doublets, singlets or non-defined GEM
+table(seuratObj$FM_doublets)
+
+qc_df<- qc_df %>% 
+  bind_rows(list(qc_stats="doublet FM", 
+                 values = table(seuratObj$FM_doublets)["double"]),
+            list(qc_stats = "negative FM", 
+                 values= table(seuratObj$FM_doublets)["non-defined"]),
+            list(qc_stats = "singlet FM", 
+                 values = table(seuratObj$FM_doublets)["singlet"]))
+
+# Information related to samples
+table(seuratObj$FM_sample)
+
+qc_df<- qc_df %>% bind_rows(lapply(1:4,
+                   function(i){
+                     sample<-paste0("sample",i)
+                     list(qc_stats=paste0(sample, ' FM'),
+                          values = table(seuratObj$FM_sample)[sample])}))
+```
+
+### Demultiplexing based on hashes
+
+```{r DemulHashing}
+# For this experiment, 6-8 samples were pooled in 1 pooled sample 
+# Making use of 6-8 different hashtags per pooled sample
+hashtagsUsed<-annotation_sample$Hash%>%sort()
+hashtagsTotal<-annotation$Hash%>%unique()%>%sort()
+names(colorsHashtags)<-hashtagsTotal
+
+# Hashtags in rows, cells in columns
+seuratObj[["HTO"]]  <- CreateAssayObject(counts = as.matrix(cellranger_data$`Antibody Capture`[hashtagsUsed,joint.cellnames]))
+seuratObj <- NormalizeData(seuratObj, assay = "HTO", 
+                           normalization.method = "CLR")
+
+# Calculate number of cells lacking hashtag
+qc_df <- qc_df %>%
+  bind_rows(list(qc_stats = "non hashed cells",
+                 values = sum(seuratObj@meta.data[["nFeature_HTO"]]==0)),
+            list(qc_stats = "hashed cells",
+                 values = sum(seuratObj@meta.data[["nFeature_HTO"]]!=0)))
+
+qc_df<-qc_df %>% 
+  bind_rows(list(qc_stats = "percentage non hashed cells",
+                 values = qc_df$values[qc_df$qc_stats == "non hashed cells"]/
+                   qc_df$values[qc_df$qc_stats == "number of cells postfiltered"]*100),
+            list(qc_stats = "percentage hashed cells",
+                 values = qc_df$values[qc_df$qc_stats == "hashed cells"]/
+                   qc_df$values[qc_df$qc_stats == "number of cells postfiltered"]*100))
+
+# Select for cells with hashtag to make demultiplexing step possible
+seuratObj<-subset(seuratObj,
+                  subset = nFeature_HTO!=0)
+
+seuratObj <- HTODemux(seuratObj, assay = "HTO", positive.quantile = 0.99)
+```
+
+```{r CreateOutDirHashing}
+output_dir_results_hashing <- paste0(output_dir_results,"/Hashing")
+dir.create(output_dir_results_hashing, recursive=TRUE)
+```
+
+```{r DemulMetrics}
+table(seuratObj$HTO_classification.global)
+# Add classification based on HTO
+qc_df<- qc_df %>% 
+  bind_rows(list(qc_stats="doublet HTO", 
+                 values = table(seuratObj$HTO_classification.global)["Doublet"]),
+            list(qc_stats = "negative HTO", 
+                 values= table(seuratObj$HTO_classification.global)["Negative"]),
+            list(qc_stats = "singlet HTO", 
+                 values = table(seuratObj$HTO_classification.global)["Singlet"]))
+
+# Add information on hashtags
+qc_df<- qc_df %>% 
+  bind_rows(lapply(hashtagsTotal,
+                   function(i){
+                     list(qc_stats=paste(i, 'HTO'),
+                          values = table(seuratObj$HTO_maxID)[i])}))
+
+Idents(seuratObj) <- "HTO_maxID"
+RidgePlot(seuratObj, assay = "HTO", 
+          features = rownames(cellranger_data$`Antibody Capture`[hashtagsUsed,joint.cellnames]), 
+          ncol = 2,
+          cols = alpha(colorsHashtags,0.5),
+          # Show hashtag with highest expression level in the end
+          # No peak visible at expression level 0 if correct demultiplexing
+          sort = "increasing")
+# Save as pdf
+ggsave(filename = "Distribution_hashtags.pdf", 
+       path= output_dir_results_hashing, 
+       width = 10, height = 15, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Distribution_hashtags.jpeg", 
+       path= output_dir_results_hashing, 
+       width = 10, height = 15, device = "jpeg")
+
+# Change default assay to avoid warnings
+DefaultAssay(seuratObj) <- 'HTO'
+plot<-lapply(1:(length(hashtagsUsed)-1),
+             function(i){
+               # Adjust colors based on the hashtags of interest
+               colors<-rep("lightgrey", 8)
+               names(colors)<-hashtagsUsed
+               colors[i]<-colorsHashtags[i]
+               colors[i+1]<-colorsHashtags[i+1]
+               FeatureScatter(seuratObj, 
+                                        feature1=hashtagsUsed[i+1],
+                                        feature2 = hashtagsUsed[i])+
+                 scale_color_manual(values = alpha(colors, 0.7),
+                                    breaks = c(hashtagsUsed[i], hashtagsUsed[i+1]),
+                                    name = "")+
+                 theme_celine})
+ggarrange(plotlist = plot)
+# Save as pdf
+ggsave(filename = "Scatter_hashtags.pdf", 
+       path= output_dir_results_hashing, 
+       width = 20, height = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Scatter_hashtags.jpeg", 
+       path= output_dir_results_hashing, 
+       width = 20, height = 20, device = "jpeg")
+DefaultAssay(seuratObj) <- 'RNA'
+```
+
+```{r VlnPlotHTO}
+Idents(seuratObj) <- "HTO_classification.global"
+VlnPlot(seuratObj, features = "nCount_RNA", 
+        pt.size = 0.1, log = TRUE)+
+  theme_celine+
+  theme(axis.text.x = element_text(angle=0, vjust=5, hjust=0.5),
+                              strip.background = element_blank(),
+                              axis.ticks.x = element_blank(),
+                              axis.line.x = element_blank())+
+  NoLegend()
+# Save as pdf
+ggsave(filename = "Violin_hashtags_doublets.pdf", 
+       path= output_dir_results_hashing, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Violin_hashtags_doublets.jpeg", 
+       path= output_dir_results_hashing, 
+       width = 20, device = "jpeg")
+```
+
+```{r HeatmapHTO}
+HTOHeatmap(seuratObj, assay = "HTO", ncells = 5000)+
+  scale_fill_gradientn(colors = c("#ECCFF2", "#418DF1", "#5F4699"))
+# Save as pdf
+ggsave(filename = "Heatmap_hashtags.pdf", 
+       path= output_dir_results_hashing, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Heatmap_hashtags.jpeg", 
+       path= output_dir_results_hashing, 
+       width = 20, device = "jpeg")
+```
+
+### Overlap Hashing - Freemuxlet (SNPs)
+
+```{r CompareDemuxFreemux}
+HTO_FM_compare <- as.data.frame(seuratObj@meta.data) %>%
+  dplyr::select(HTO_classification.global, 
+                FM_doublets, 
+                HTO_classification, 
+                FM_sample)
+
+classes_HTO_FM <- HTO_FM_compare %>% 
+  group_by(HTO_classification, FM_sample) %>% 
+  summarise(counts_combos = n()) %>% 
+  group_by(HTO_classification) %>% 
+  top_n(1, wt = counts_combos) %>% 
+  filter(HTO_classification %in% hashtagsUsed)
+
+# Add the patientID 
+# This must be comparable to the individuals found by Freemuxlet
+classes_HTO_FM<-left_join(x = classes_HTO_FM, 
+                          annotation_sample[c("Hash", "PatientID")],
+                          by = c("HTO_classification" = "Hash"))
+
+write.table(x = classes_HTO_FM,
+          file = paste0(output_dir_results_hashing,"/HTO_FMO_counts.txt"),
+          sep = "\t",
+          col.names = TRUE,
+          quote = FALSE)
+
+print(classes_HTO_FM)
+```
+
+```{r CompareDemuxFreemux2}
+# Look for the same annotation based on freemuxlet and hashtags
+HTO_FM_compare <- HTO_FM_compare %>%
+  mutate(FMHTO_classification = case_when(
+    # If doublet seen in either hashtags or freemuxlet --> Doublet
+    HTO_classification.global == "Doublet" | FM_doublets == "double"~ "Doublet",
+    # Hashtags match with freemuxlet --> correct hashtag
+    # Or Hashtag is identified but freemuxlet not --> only relying on hashtag
+    (HTO_classification == "Hashtag1" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag1", "FM_sample"]) |
+      (HTO_classification == "Hashtag1" & FM_doublets == "non-defined") ~ "Hashtag1",
+    (HTO_classification == "Hashtag2" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag2", "FM_sample"]) | 
+      (HTO_classification == "Hashtag2" & FM_doublets == "non-defined") ~ "Hashtag2",
+    (HTO_classification == "Hashtag3" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag3", "FM_sample"]) |
+      (HTO_classification == "Hashtag3" & FM_doublets == "non-defined") ~ "Hashtag3",
+    (HTO_classification == "Hashtag4" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag4", "FM_sample"]) |
+      (HTO_classification == "Hashtag4" & FM_doublets == "non-defined") ~ "Hashtag4",
+    (HTO_classification == "Hashtag5" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag5", "FM_sample"]) |
+      (HTO_classification == "Hashtag5" & FM_doublets == "non-defined") ~ "Hashtag5",
+    (HTO_classification == "Hashtag6" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag6", "FM_sample"]) |
+      (HTO_classification == "Hashtag6" & FM_doublets == "non-defined") ~ "Hashtag6",
+    (HTO_classification == "Hashtag7" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag7", "FM_sample"]) |
+      (HTO_classification == "Hashtag7" & FM_doublets == "non-defined") ~ "Hashtag7",
+    (HTO_classification == "Hashtag8" & FM_sample %in% classes_HTO_FM[classes_HTO_FM$HTO_classification == "Hashtag8", "FM_sample"]) |
+      (HTO_classification == "Hashtag8" & FM_doublets == "non-defined") ~ "Hashtag8",
+    # Both hashtag and freemuxlet can not identify sample
+    HTO_classification.global == "Negative" & FM_doublets == "non-defined" ~ "TrueNegative",
+    # Only hashtags are undefined --> only relying on freemuxlet
+    HTO_classification.global == "Negative" & FM_sample == "sample1" ~ 
+      unique(classes_HTO_FM[classes_HTO_FM$FM_sample == "sample1", "PatientID"]$PatientID),
+    HTO_classification.global == "Negative" & FM_sample == "sample2" ~ 
+      unique(classes_HTO_FM[classes_HTO_FM$FM_sample == "sample2", "PatientID"]$PatientID),
+    HTO_classification.global == "Negative" & FM_sample == "sample3" ~ 
+      unique(classes_HTO_FM[classes_HTO_FM$FM_sample == "sample3", "PatientID"]$PatientID),
+    HTO_classification.global == "Negative" & FM_sample == "sample4" ~ 
+      unique(classes_HTO_FM[classes_HTO_FM$FM_sample == "sample4", "PatientID"]$PatientID),
+    HTO_classification.global == "Negative" & FM_sample == "sample5" ~ 
+      unique(classes_HTO_FM[classes_HTO_FM$FM_sample == "sample5", "PatientID"]$PatientID),
+    HTO_classification.global == "Negative" & FM_sample == "sample6" ~ 
+      unique(classes_HTO_FM[classes_HTO_FM$FM_sample == "sample6", "PatientID"]$PatientID),
+    # Otherwise seen as unclassified
+    TRUE~ "unclassified"
+  ))
+```
+
+Per pool of samples, at least one healthy donor is unique. This means that for a certain healthy donor, only one stimulated sample is present in the pool. Consequently, it is possible to link the correct sample with the correct hashtag based on the output and identification of freemuxlet.
+
+```{r UniqueDonors}
+# Find the unique donor or donors
+Unique<-annotation_sample$PatientID%>%table==1
+Unique<-names(annotation_sample$PatientID%>%table)[Unique]
+
+
+HTO_FM_compare<-HTO_FM_compare%>%
+  mutate(FMHTO_classification = case_when(
+    # If donor is unique in pool then use correct hashtag
+    "P1" %in% Unique & FMHTO_classification == "P1" ~ (classes_HTO_FM%>%filter(PatientID=="P1"))$HTO_classification[1],
+    "P2" %in% Unique & FMHTO_classification == "P2" ~ (classes_HTO_FM%>%filter(PatientID=="P2"))$HTO_classification[1],
+    "P3" %in% Unique & FMHTO_classification == "P3" ~ (classes_HTO_FM%>%filter(PatientID=="P3"))$HTO_classification[1],
+    "P4" %in% Unique & FMHTO_classification == "P4" ~ (classes_HTO_FM%>%filter(PatientID=="P4"))$HTO_classification[1],
+    "P5" %in% Unique & FMHTO_classification == "P5" ~ (classes_HTO_FM%>%filter(PatientID=="P5"))$HTO_classification[1],
+    "P6" %in% Unique & FMHTO_classification == "P6" ~ (classes_HTO_FM%>%filter(PatientID=="P6"))$HTO_classification[1],
+    # Otherwise
+    TRUE ~ FMHTO_classification)
+  )
+
+rm(Unique)
+
+seuratObj@meta.data[["HTO_FM_consensus"]] <- HTO_FM_compare$FMHTO_classification
+Idents(seuratObj) <- "HTO_FM_consensus"
+
+table(seuratObj$HTO_FM_consensus)
+
+qc_df<- qc_df %>% 
+  bind_rows(lapply(hashtagsTotal,
+                   function(i){
+                     list(qc_stats=paste0(i, ' consensus 1'),
+                          values = table(seuratObj$HTO_FM_consensus)[i])}))%>%
+  bind_rows(list(qc_stats="doublet consensus", 
+                 values = table(seuratObj$HTO_FM_consensus)["Doublet"]),
+            list(qc_stats="true negatives consensus",
+                 values = table(seuratObj$HTO_FM_consensus)["TrueNegative"]),
+            # Contradiction between freemuxlet and hashtag (will be removed)
+            list(qc_stats="unidentified consensus", 
+                 values = table(seuratObj$HTO_FM_consensus)["unclassified"]),
+            lapply(annotation$PatientID%>%unique()%>%sort(),
+                   function(i){
+                     list(qc_stats=paste0(i, ' consensus 1'),
+                          values = table(seuratObj$HTO_FM_consensus)[i])}))
+```
+
+### Demultiplexing of the unidentified samples
+
+The samples showing contradictions between the output of freemuxlet and the hashtags based on sample annotation are lost. But the samples that could not be identified based on the hashtags but were identified based on their SNPs (freemuxlet) can be used in an additional demultiplexing step. Filtering out the already identified cells reduces the complexity of the regression problem which could result in new findings based on the hashtags.
+
+```{r ExtraDemulStep, eval = FALSE}
+##### This code chunk is not evaluated because every sample is unique in the pool #####
+
+# Filter out the cells only identified based on freemuxlet
+seuratObj_unident <- subset(seuratObj, 
+                            idents =  grep("P",unique(seuratObj$HTO_FM_consensus), value=TRUE))
+# Demultiplexing of these cells based on their hashtags
+seuratObj_unident <- HTODemux(seuratObj_unident, assay = "HTO", 
+                              positive.quantile = 0.99,
+                              init=2)
+# Heatmap
+HTOHeatmap(seuratObj_unident, assay = "HTO", ncells = 5000)+
+  scale_fill_gradientn(colors = c("#ECCFF2", "#418DF1", "#5F4699"))
+# Save as pdf
+ggsave(filename = "Heatmap_hashtags_unidentified.pdf", 
+       path= output_dir_results_hashing, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Heatmap_hashtags_unidentified.jpeg", 
+       path= output_dir_results_hashing, 
+       width = 20, device = "jpeg")
+```
+
+
+```{r CompareDemuxFreemuxExtra, eval = F}
+##### This code chunk is not evaluated because every sample is unique in the pool #####
+HTO_FM_compare2 <- as.data.frame(seuratObj_unident@meta.data) %>%
+  dplyr::select(HTO_classification.global, 
+                FM_doublets, 
+                HTO_classification, 
+                FM_sample)
+
+classes_HTO_FM2 <- HTO_FM_compare2 %>% 
+  group_by(HTO_classification, FM_sample) %>% 
+  summarise(counts_combos = n()) %>% 
+  group_by(HTO_classification) %>% 
+  top_n(1, wt = counts_combos) %>% 
+  filter(HTO_classification %in% hashtagsUsed)
+
+# Add the patientID and previously defined freemuxlet samples
+# This must be comparable to the individuals found by Freemuxlet
+classes_HTO_FM_part<-classes_HTO_FM[c("HTO_classification", "FM_sample","PatientID")]
+colnames(classes_HTO_FM_part)[2]<-c("FM_sample1")
+classes_HTO_FM2<- left_join(x = classes_HTO_FM2, 
+                           classes_HTO_FM_part, 
+                           by = c("HTO_classification" = "HTO_classification"))
+classes_HTO_FM2<-classes_HTO_FM2[classes_HTO_FM2$FM_sample==classes_HTO_FM2$FM_sample1,
+                                 c("HTO_classification",
+                                   "FM_sample",
+                                   "counts_combos",
+                                   "PatientID")]
+
+write.table(x = classes_HTO_FM2,
+          file = paste0(output_dir_results_hashing,"/HTO_FMO_counts2.txt"),
+          sep = "\t",
+          col.names = TRUE,
+          quote = FALSE)
+
+print(classes_HTO_FM)
+```
+
+```{r CompareDemuxFreemuxExtra2, eval = F}
+##### This code chunk is not evaluated because every sample is unique in the pool #####
+
+# Look for the same annotation based on freemuxlet and hashtags
+HTO_FM_compare2 <- HTO_FM_compare2 %>%
+  mutate(FMHTO_classification = case_when(
+    # If doublet seen in either hashtags or freemuxlet --> Doublet
+    HTO_classification.global == "Doublet" | FM_doublets == "double"~ "Doublet",
+    # Hashtags match with freemuxlet --> correct hashtag
+    HTO_classification == "Hashtag1" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag1", "FM_sample"] ~ "Hashtag1",
+    HTO_classification == "Hashtag2" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag2", "FM_sample"] ~ "Hashtag2",
+    HTO_classification == "Hashtag3" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag3", "FM_sample"] ~ "Hashtag3",
+    HTO_classification == "Hashtag4" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag4", "FM_sample"] ~ "Hashtag4",
+    HTO_classification == "Hashtag5" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag5", "FM_sample"] ~ "Hashtag5",
+    HTO_classification == "Hashtag6" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag6", "FM_sample"] ~ "Hashtag6",
+    HTO_classification == "Hashtag7" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag7", "FM_sample"] ~ "Hashtag7",
+    HTO_classification == "Hashtag8" & FM_sample %in% classes_HTO_FM2[classes_HTO_FM2$HTO_classification == "Hashtag8", "FM_sample"] ~ "Hashtag8",
+    # Both hashtag and freemuxlet can not identify sample
+    HTO_classification.global == "Negative" & FM_doublets == "non-defined" ~ "TrueNegative",
+    # Otherwise seen as unclassified
+    TRUE~ "unclassified"
+  ))
+
+seuratObj_unident@meta.data[["HTO_FM_consensus"]] <- HTO_FM_compare2$FMHTO_classification
+Idents(seuratObj_unident) <- "HTO_FM_consensus"
+
+table(seuratObj_unident$HTO_FM_consensus)
+
+qc_df<- qc_df %>% 
+  bind_rows(lapply(hashtagsTotal,
+                   function(i){
+                     list(qc_stats=paste0(i, ' consensus 2 (extra)'),
+                          values = table(seuratObj_unident$HTO_FM_consensus)[i])}))
+
+```
+
+## Final set of cells
+
+### Extract singlets
+
+```{r Singlets}
+# Idents are changed to the hashtag of healthy control ID that were found
+# We extract only singlets + doublets that contain cells of the same donor/sample (same SNP and hashtag)
+
+# Singlets obtained after first demultiplexing step
+seuratObj_singlet1 <- subset(seuratObj, idents = hashtagsUsed)
+
+# Not all hashtags are still present in the seurat object
+# seuratObj_singlet2 <- subset(seuratObj_unident, idents = grep("Hashtag",
+#                                                               levels(seuratObj_unident),
+#                                                               value=TRUE))
+
+# Merge all the identified singlets together in one seurat object
+# seuratObj_singlet <- merge(seuratObj_singlet1,
+#                            seuratObj_singlet2)
+
+seuratObj_singlet<-seuratObj_singlet1
+seuratObj_singlet <- NormalizeData(seuratObj_singlet, 
+                                   normalization.method = 'CLR', margin = 2)
+seuratObj_singlet <- FindVariableFeatures(seuratObj_singlet, 
+                                          selection.method = "mean.var.plot")
+seuratObj_singlet  <- ScaleData(seuratObj_singlet, 
+                                features = VariableFeatures(seuratObj_singlet))
+seuratObj_singlet <- RunPCA(seuratObj_singlet, 
+                            features = VariableFeatures(seuratObj_singlet))
+```
+
+### Filter out remaining doublets
+
+Based on the demultiplexing performed above, two types of multiplets/doublets were removed:
+
+-   Doublets containing cells from different donors based on the genotyping demultiplexing with freemuxlet
+-   Doublet containing cells coded with different hashtags (originating from another donor or condition)
+
+With the [Seurat function](https://github.com/chris-mcginnis-ucsf/DoubletFinder) DoubletFinder, it is also possible to filter out the doublets that remain: doublets from same donor (not identified via freemuxlet) and tagged with the same hashtag. This function uses the gene expression to identify if a droplet contains multiple cells and needs to be deleted from the data. The input arguments are: 
+
+- seu = Seuratobject (after NormalizeData, FindVariableGenes, ScaleData, RunPCA) 
+- PCs = number of statistically-significant principal components 
+- pN = Number of generated artificial doublets, expressed as a proportion of the merged real-artificial data 
+- pK = PC neighborhood size used to compute pANN (this value depends on the scRNA-seq dataset that is used and should be optimized per data file) 
+- nExp = pANN threshold used to make final doublet/singlet predictions
+
+```{r DoubletFinder, eval = FALSE}
+# Define the expected number of doublet cells
+nExp <- round(ncol(seuratObj_singlet) * 0.03)
+print(nExp)
+# Find doublets/multiplets
+seuratObj_singlet <- doubletFinder_v3(seuratObj_singlet,
+                                      pN = 0.25, pK = 0.09, 
+                                      nExp = nExp, PCs = 1:10)
+# Classifcation of cells based on DoubletFinder 
+ClassName<-grep("DF.classification", seuratObj_singlet@meta.data%>%colnames(),
+                value = TRUE)
+Idents(seuratObj_singlet)<-ClassName
+table(Idents(seuratObj_singlet))
+
+qc_df <- qc_df %>%
+  bind_rows(list(qc_stats = "doublets DoubletFinder",
+                 values = table(Idents(seuratObj_singlet))["Doublet"]))
+
+# Only use the 'real' singlets
+seuratObj_singlet<-subset(seuratObj_singlet,
+                          idents = 'Singlet')
+```
+
+```{r qcStatUpdate}
+qc_df <- qc_df %>%
+  bind_rows(list(qc_stats = "number of singlet cells",
+                 values = dim(seuratObj_singlet)[2]))
+qc_df <- qc_df %>%
+  bind_rows(list(qc_stats = "percentage remaining cells",
+                 values = qc_df$values[qc_df$qc_stats == "number of singlet cells"]/
+                   qc_df$values[qc_df$qc_stats == "number of cells prefiltered"]*100))
+```
+
+### Add annotation
+
+```{r Annotation}
+annotation_cells <- left_join(as.data.frame(seuratObj_singlet$HTO_FM_consensus),
+                              annotation_sample,
+                              by=c("seuratObj_singlet$HTO_FM_consensus"="Hash"))
+
+# Add annotation information in meta data of seurat object
+seuratObj_singlet@meta.data[["PatientID"]]<- annotation_cells$PatientID
+seuratObj_singlet@meta.data[["PIDID"]]<- annotation_cells$PIDID
+seuratObj_singlet@meta.data[["Stimulation"]]<- annotation_cells$Stimulation
+seuratObj_singlet@meta.data[["TimePoint"]]<- annotation_cells$TimePoint
+seuratObj_singlet@meta.data[["Sorter"]]<- annotation_cells$Sorter
+seuratObj_singlet@meta.data[["PatStim"]]<-paste(annotation_cells$PatientID,
+                                                annotation_cells$Stimulation, 
+                                                sep = "_")
+```
+
+### Check hashtags on singlets
+
+```{r FeatureScatterSinglet}
+DefaultAssay(seuratObj_singlet) <- 'HTO'
+plot<-lapply(1:(length(hashtagsUsed)-1),
+             function(i){
+               # Adjust colors based on the hashtags of interest
+               colors<-rep("grey", 8)
+               names(colors)<-hashtagsUsed
+               colors[i]<-colorsHashtags[i]
+               colors[i+1]<-colorsHashtags[i+1]
+               FeatureScatter(seuratObj_singlet, 
+                                        feature1 = hashtagsUsed[i+1],
+                                        feature2 = hashtagsUsed[i])+
+                 scale_color_manual(values = alpha(colors, 0.7),
+                                    breaks = c(hashtagsUsed[i], hashtagsUsed[i+1]),
+                                    name = "")+
+                 theme_celine})
+ggarrange(plotlist = plot)
+# Save as pdf
+ggsave(filename = "Scatter_singlets_hashtags.pdf", 
+       path= output_dir_results_hashing, 
+       width = 20, height = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "Scatter_singlets_hashtags.jpeg", 
+       path= output_dir_results_hashing, 
+       width = 20, height = 20, device = "jpeg")
+DefaultAssay(seuratObj_singlet) <- 'RNA'
+```
+
+### Save seurat object
+
+```{r SaveSeurat}
+saveRDS(seuratObj_singlet, 
+        file = paste0(output_dir_robjects,"/seuratObj_",
+                      sampleName,"_singlets.rds"))
+```
+
+## Dimensionality reduction
+
+### Visualisation TSNE
+
+```{r TSNE}
+# We select the top 10 PCs for clustering and tSNE based on PCElbowPlot
+seuratObj_singlet <- FindNeighbors(seuratObj_singlet, 
+                                   reduction = "pca", dims = 1:10)
+seuratObj_singlet <- FindClusters(seuratObj_singlet, 
+                                  resolution = 0.6, verbose = FALSE)
+seuratObj_singlet <- RunTSNE(seuratObj_singlet, 
+                             reduction = "pca", dims = 1:10)
+
+# Projecting singlet identities on TSNE visualization
+# Colors based HTO's of samples
+DimPlot(seuratObj_singlet, 
+        group.by = "HTO_classification")+
+  ggtitle("Hashtags")+
+  scale_color_manual(values = colorsHashtags,
+                     breaks = hashtagsUsed)+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+# Save as pdf
+ggsave(filename = "TSNE_HTOClassification.pdf", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "pdf") 
+# Save as jpeg
+ggsave(filename = "TSNE_HTOClassification.jpeg", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based on Patients
+DimPlot(seuratObj_singlet,
+        group.by="PatientID")+
+  ggtitle("Healthy control")+
+  scale_color_manual(values = colorsPatients,
+                     breaks = sort(unique(annotation_sample$PatientID)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "TSNE_PatientClassification.pdf", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "pdf") 
+# Save as jpeg
+ggsave(filename = "TSNE_PatientClassification.jpeg", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "jpeg") 
+
+# Colors based on Stimulation
+DimPlot(seuratObj_singlet,
+        group.by = "Stimulation")+
+  ggtitle("Stimulation mix")+
+  scale_color_manual(values = colorsStim,
+                     breaks = sort(unique(annotation_sample$Stimulation)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+# Save as pdf
+ggsave(filename = "TSNE_StimulationClassification.pdf", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "pdf") 
+# Save as jpeg
+ggsave(filename = "TSNE_StimulationClassification.jpeg", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "jpeg") 
+```
+
+### Add ADT data for singlets
+
+#### Combination RNA and ADT based UMAP
+
+WNN UMAP is Weighted Nearest Neighbor algorithm used in UMAP. This dimensionality reduction algorithm takes into account both the information on RNA and ADT (antibody-derived tags).
+
+```{r wwnUMAP}
+# Create directory
+output_dir_results_multimodal <- paste0(output_dir_results,"/ADTintegration")
+dir.create(output_dir_results_multimodal,recursive=TRUE)
+
+# Look for cell both present in the gene expression and antibody capture data
+# Focusing on the singlets data set
+joint.cellnames <- intersect(rownames(seuratObj_singlet@meta.data), colnames(cellranger_data$`Antibody Capture`))
+
+seuratObj_singlet[["ADT"]]  <- CreateAssayObject(counts = as.matrix(cellranger_data$`Antibody Capture`[,joint.cellnames]))
+DefaultAssay(seuratObj_singlet) <- 'ADT'
+VariableFeatures(seuratObj_singlet) <- rownames(seuratObj_singlet[["ADT"]])
+
+seuratObj_singlet <- NormalizeData(seuratObj_singlet, 
+                                   normalization.method = 'CLR', margin = 2) %>%
+  ScaleData() %>% 
+  RunPCA(reduction.name = 'apca')
+
+seuratObj_singlet  <- FindMultiModalNeighbors(seuratObj_singlet, 
+                                              reduction.list = list("pca", "apca"),
+                                              dims.list = list(1:30, 1:18),
+                                              modality.weight.name = "RNA.weight"
+)
+
+seuratObj_singlet <- RunUMAP(seuratObj_singlet, 
+                             nn.name = "weighted.nn",
+                             # Dimensionality reduction based on RNA and ADT counts (weighted)
+                             reduction.name = "wnn.umap", 
+                             reduction.key = "wnnUMAP_")
+seuratObj_singlet <- FindClusters(seuratObj_singlet, 
+                                  graph.name = "wsnn", 
+                                  algorithm = 3, 
+                                  resolution = 2, 
+                                  verbose = FALSE)
+
+# Visualisation UMAP
+# Colors based on clusters identified
+DimPlot(seuratObj_singlet, 
+        reduction = 'wnn.umap', 
+        label = TRUE, 
+        repel = TRUE, 
+        label.size = 2.5) +
+  theme_celine+
+  ggtitle("UMAP clusters RNA + ADT")+
+  NoLegend()
+
+# Save as pdf
+ggsave(filename = "wnnUMAP_RNAADT_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "wnnUMAP_RNAADT_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based HTO's of samples
+DimPlot(seuratObj_singlet, 
+        reduction = "wnn.umap",
+        group.by = "HTO_classification")+
+  ggtitle("Hashtags")+
+  scale_color_manual(values = colorsHashtags,
+                     breaks = hashtagsUsed)+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "wnnUMAP_RNAADT_HTOClassification_integration.pdf", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "pdf") 
+# Save as jpeg
+ggsave(filename = "wnnUMAP_RNAADT_HTOClassification_integration.jpeg", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "jpeg") 
+
+# Colors based on healthy controls identified
+DimPlot(seuratObj_singlet,
+        reduction = 'wnn.umap',
+        group.by = "PatientID")+
+  ggtitle("Healthy control")+
+  scale_color_manual(values = colorsPatients,
+                     breaks = sort(unique(seuratObj_singlet$PatientID)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "wnnUMAP_RNAADT_Patient_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "wnnUMAP_RNAADT_Patient_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based on healthy controls identified
+DimPlot(seuratObj_singlet,
+        reduction = 'wnn.umap',
+        group.by = "Stimulation")+
+  ggtitle("Stimulation mix")+
+  scale_color_manual(values = colorsStim,
+                     breaks = sort(unique(seuratObj_singlet$Stimulation)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "wnnUMAP_RNAADT_Stimulation_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "wnnUMAP_RNAADT_Stimulation_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+```
+
+#### RNA only based UMAP
+
+```{r UMAP_RNA}
+seuratObj_singlet <- RunUMAP(seuratObj_singlet, 
+                             reduction = 'pca', 
+                             dims = 1:30, 
+                             # Dimensionality reduction only on RNA counts
+                             assay = 'RNA',
+                             reduction.name = 'rna.umap', 
+                             reduction.key = 'rnaUMAP_')
+
+# Colors based on clusters identified
+DimPlot(seuratObj_singlet, 
+        reduction = 'rna.umap',  
+        label = TRUE,
+        repel = TRUE, 
+        label.size = 2.5) + 
+  theme_celine+
+  NoLegend()+
+  ggtitle("UMAP clusters RNA")
+
+# Save as pdf
+ggsave(filename = "rnaUMAP_RNAADT_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "rnaUMAP_RNAADT_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based HTO's of samples
+DimPlot(seuratObj_singlet, 
+        reduction = "rna.umap",
+        group.by = "HTO_classification")+
+  ggtitle("Hashtags")+
+  scale_color_manual(values = colorsHashtags,
+                     breaks = hashtagsUsed)+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+# Save as pdf
+ggsave(filename = "rnaUMAP_RNAADT_HTOClassification_integration.pdf", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "rnaUMAP_RNAADT_HTOClassification_integration.jpeg", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based on healthy control
+DimPlot(seuratObj_singlet,
+        reduction = 'rna.umap',
+        group.by = "PatientID")+
+  ggtitle("Healthy control")+
+  scale_color_manual(values = colorsPatients,
+                     breaks = sort(unique(seuratObj_singlet$PatientID)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "rnaUMAP_RNAADT_Patient_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "rnaUMAP_RNAADT_Patient_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based on stimulation mix used
+DimPlot(seuratObj_singlet,
+        reduction = 'rna.umap',
+        group.by = "Stimulation")+
+  ggtitle("Stimulation mix")+
+  scale_color_manual(values = colorsStim,
+                     breaks = sort(unique(seuratObj_singlet$Stimulation)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf 
+ggsave(filename = "rnaUMAP_RNAADT_Stimulation_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "rnaUMAP_RNAADT_Stimulation_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+```
+
+#### ADT only based UMAP
+
+```{r UMAP_ADT}
+seuratObj_singlet <- RunUMAP(seuratObj_singlet, 
+                             reduction = 'apca', 
+                             dims = 1:18, 
+                             # Dimensionality reduction only based on ADT counts
+                             assay = 'ADT',
+                             reduction.name = 'adt.umap', 
+                             reduction.key = 'adtUMAP_')
+
+# Coloring based clusters identified
+DimPlot(seuratObj_singlet, 
+        reduction = 'adt.umap',  
+        label = TRUE,
+        repel = TRUE, 
+        label.size = 2.5)+
+  ggtitle("UMAP clusters ADT")+
+  theme_celine+
+  theme(plot.title=element_text(hjust=0.5))+
+  NoLegend()
+
+# Save as pdf
+ggsave(filename = "adtUMAP_RNAADT_integration.pdf",
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "adtUMAP_RNAADT_integration.jpeg",
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based HTO's of samples
+DimPlot(seuratObj_singlet, 
+        reduction = "adt.umap",
+        group.by = "HTO_classification")+
+  ggtitle("Hashtags")+
+  scale_color_manual(values = colorsHashtags,
+                     breaks = hashtagsUsed)+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "adtUMAP_RNAADT_HTOClassification_integration.pdf", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "pdf") 
+# Save as jpeg
+ggsave(filename = "adtUMAP_RNAADT_HTOClassification_integration.jpeg", 
+       path=output_dir_results_hashing, 
+       width = 10, height = 10, device = "jpeg") 
+
+# Coloring based on healthy control
+DimPlot(seuratObj_singlet,
+        reduction = 'adt.umap',
+        group.by = "PatientID")+
+  ggtitle("Healthy control")+
+  scale_color_manual(values = colorsPatients,
+                     breaks = sort(unique(seuratObj_singlet$PatientID)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "adtUMAP_RNAADT_Patient_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "adtUMAP_RNAADT_Patient_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+
+# Colors based on stimulation mix used
+DimPlot(seuratObj_singlet,
+        reduction = 'adt.umap',
+        group.by = "Stimulation")+
+  ggtitle("Stimulation mixes")+
+  scale_color_manual(values = colorsStim,
+                     breaks = sort(unique(seuratObj_singlet$Stimulation)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+# Save as pdf
+ggsave(filename = "adtUMAP_RNAADT_Stimulation_integration.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "pdf")
+# Save as jpeg
+ggsave(filename = "adtUMAP_RNAADT_Stimulation_integration.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 10, height = 10, device = "jpeg")
+```
+
+### Feature plots
+
+```{r FeaturePlot}
+# Select the ADT, not hashtags
+featuresADT<-paste0(seuratObj_singlet@assays[['ADT']]@key, featuresADT)
+
+FeaturePlot(seuratObj_singlet, features = featuresADT,
+            reduction = 'wnn.umap', 
+            max.cutoff = 2,
+            cols = c("lightgrey","darkred"), ncol = 3)
+
+# Save as pdf
+ggsave(filename = "wnnUMAP_featureplot.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 20, height = 40, device = "pdf")
+# Save as jpeg
+ggsave(filename = "wnnUMAP_featureplot.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 20, height = 40, device = "jpeg")
+
+VlnPlot(seuratObj_singlet, 
+        features = "RNA.weight", 
+        group.by = 'seurat_clusters', 
+        sort = TRUE, pt.size = 0.1) +
+  theme_bar+
+  ggtitle("RNA weights")+
+  NoLegend()
+
+# Save as pdf
+ggsave(filename = "wnnUMAP_vlnplot.pdf", 
+       path=output_dir_results_multimodal, 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(filename = "wnnUMAP_vlnplot.jpeg", 
+       path=output_dir_results_multimodal, 
+       width = 20, device = "jpeg")
+
+# Switch back to RNA assay
+DefaultAssay(seuratObj_singlet) <- 'RNA'
+```
+
+### Save seurat object
+
+```{r SaveSinglets}
+saveRDS(seuratObj_singlet, 
+        file = paste0(output_dir_robjects,"/seuratObj_",
+                      sampleName,"_afterintegrationADT.rds"))
+```
+
+### Visualise UMAP
+
+```{r QC_visualisation, message=FALSE, warning=FALSE,tidy=T}
+# UMI plot
+
+drawplot(seuratObj_singlet, 'wnn.umap', 'nCount_RNA')+
+  ylab("wnnUMAP_2")+
+  xlab("wnnUMAP_1")+
+  ggtitle("RNA counts")+
+  theme_celine+
+  theme(legend.title = element_blank())
+# Save as pdf
+ggsave(file = paste0(output_dir_results_qc,
+                     "/wnn.umap_nCountRNA.pdf"), 
+       width = 10, height = 7, device = "pdf")
+# Save as jpeg
+ggsave(file = paste0(output_dir_results_qc,
+                     "/wnn.umap_nCountRNA.jpeg"), 
+       width = 10, height = 7, device = "jpeg")
+
+# Mito plot
+drawplot(seuratObj_singlet,'wnn.umap','percent_mito')+
+  ylab("wnnUMAP_2")+
+  xlab("wnnUMAP_1")+
+  ggtitle("Percentage mitochondrial genes")+
+  theme_celine+
+  theme(legend.title = element_blank())
+
+# Save as pdf
+ggsave(file = paste0(output_dir_results_qc,
+                     "/wnn.umap_percentmito.pdf"), 
+       width = 10, height = 7, device = "pdf")
+# Save as jpeg
+ggsave(file = paste0(output_dir_results_qc,
+                     "/wnn.umap_percentmito.jpeg"), 
+       width = 10, height = 7, device = "jpeg")
+```
+
+## Visualisation based on expression data
+
+### FeaturePlot - Plot marker gene expression
+
+```{r FeatureVlnGene, message=FALSE, warning=FALSE,tidy=T}
+output_dir_genes <- paste0(output_dir_results,"/PerGene")
+marker_list <-read_csv(marker_genes_visualise, 
+                       col_names=c("gene"))
+dir.create(output_dir_genes,recursive=TRUE)
+
+for (featured_gene in unlist(marker_list)) {
+  print(GeneReductionPlot(seuratObj_singlet, 
+                          featured_gene, 
+                          reductionType="wnn.umap")+
+          ylab("wnnUMAP_2")+
+          xlab("wnnUMAP_1")+
+          theme_celine)
+  # Save as pdf
+  ggsave(file = paste0(output_dir_genes,"/UMAP_", featured_gene, ".pdf"), 
+         width = 20, height = 20, device = "pdf")
+  # Save as jpeg
+  ggsave(file = paste0(output_dir_genes,"/UMAP_", featured_gene, ".jpeg"), 
+         width = 20, height = 20, device = "jpeg")
+}
+
+for (featured_gene in unlist(marker_list)) {
+  print(GeneVlnPlot(seuratObj_singlet, 
+                    featured_gene, 
+                    reductionType="wnn.umap")+
+          ylab("Gene counts")+
+          theme_bar)
+  # Save as pdf
+  ggsave(file = paste0(output_dir_genes,"/Violin_", featured_gene, ".pdf"), 
+         width = 20, device = "pdf")
+  # Save as jpeg
+  ggsave(file = paste0(output_dir_genes,"/Violin_", featured_gene, ".jpeg"), 
+         width = 20, device = "jpeg")
+}
+
+```
+
+### Calculate differentially expressed genes
+
+```{r DEGenes, warning=FALSE, message=FALSE, tidy=TRUE}
+### Find markers for every cluster compared to all remaining cells, report only the positive ones
+allMarkers <- FindAllMarkers(seuratObj_singlet, 
+                             min.pct = 0.10, 
+                             min.diff.pct = 0.25, 
+                             logfc.threshold = 0.30, 
+                             return.thresh = 0.01, 
+                             only.pos = TRUE, assay="RNA")
+table(allMarkers$cluster)
+saveRDS(allMarkers, file = paste0(output_dir_results,
+                                  "/markersGenes_",sampleName,".rds"))
+
+### Create list with markers
+totalNrClusters<-max(as.numeric(names(table(allMarkers$cluster))))
+totalNrClustersPlusOne<-totalNrClusters+1
+markersList<-list()
+
+for(i in 1:totalNrClustersPlusOne){
+  clusterNr<-i-1
+
+  tmp<-allMarkers[allMarkers$cluster==clusterNr,]
+  tmp$score<-tmp$pct.1/(tmp$pct.2+0.01)*tmp$avg_log2FC
+
+  markersList[[i]]<-tmp[order(tmp$score, decreasing=TRUE),]
+}
+names(markersList)<-paste0("cluster",0:totalNrClusters)
+
+### Write to Excel
+write.xlsx(markersList, file = paste0(output_dir_results,
+                                      "/allClustersGenes_",sampleName,
+                                      ".xlsx"))
+writeGMTfromDEresults(markersList,
+                      paste0(output_dir_results,"/allClustersGenes_",
+                             sampleName,".gmt"))
+```
+
+### Calculate differentially expressed proteins
+
+```{r DEProteins, warning=FALSE, message=FALSE, tidy=TRUE}
+
+### Find markers for every cluster compared to all remaining cells, report only the positive ones
+allMarkers <- FindAllMarkers(seuratObj_singlet, 
+                             min.pct = 0.10, 
+                             min.diff.pct = 0.25, 
+                             logfc.threshold = 0.30, 
+                             return.thresh = 0.01, 
+                             only.pos = TRUE, assay = "ADT")
+table(allMarkers$cluster)
+saveRDS(allMarkers, file = paste0(output_dir_results,"/markersProteins_",
+                                  sampleName,".rds"))
+
+### Create list with markers
+totalNrClusters<-max(as.numeric(names(table(allMarkers$cluster))))
+totalNrClustersPlusOne<-totalNrClusters+1
+markersList<-list()
+
+for(i in 1:totalNrClustersPlusOne){
+  clusterNr<-i-1
+  tmp<-allMarkers[allMarkers$cluster==clusterNr,]
+  tmp$score<-tmp$pct.1/(tmp$pct.2+0.01)*tmp$avg_log2FC
+  markersList[[i]]<-tmp[order(tmp$score, decreasing=TRUE),]
+}
+names(markersList)<-paste0("cluster",0:totalNrClusters)
+
+### Write to Excel
+write.xlsx(markersList, file = paste0(output_dir_results,"/allClustersProteins_",
+                                      sampleName,".xlsx"))
+writeGMTfromDEresults(markersList, paste0(output_dir_results,"/allClustersProteins_",
+                                          sampleName,".gmt"))
+```
+
+### Cell Cycle Regression
+
+```{r CellCycleReg}
+s.genes <- cc.genes$s.genes[cc.genes$s.genes %in% 
+                              rownames(seuratObj_singlet[["RNA"]])]
+g2m.genes <- cc.genes$g2m.genes[cc.genes$g2m.genes %in%
+                                  rownames(seuratObj_singlet[["RNA"]])]
+seuratObj_singlet <- CellCycleScoring(seuratObj_singlet, 
+                                      s.features = s.genes, 
+                                      g2m.features = g2m.genes, set.ident = TRUE)
+DimPlot(seuratObj_singlet, reduction= "wnn.umap")+
+  scale_color_manual(values = c("#00D9C0", "#C592DD", "#F0B67F"))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))+
+  ggtitle("Cell cycle regression")
+# Save as pdf
+ggsave(file = paste0(output_dir_genes,"/Cell_cycle_wnnumap.pdf"), 
+       width = 20, device = "pdf")
+# Save as jpeg
+ggsave(file = paste0(output_dir_genes,"/Cell_cycle_wnnumap.jpeg"), 
+       width = 20, device = "jpeg")
+```
+
+## A multimodal reference dataset
+
+A reference data set, loades as a new seurat object, is used to label the cells of our pooled samples. Both main cell types (e.g. B cells, T cells) and subcell types (e.g. CD8+ T cells) are present in the data.
+
+```{r MultimodalRef}
+output_dir_labelcells <- paste0(output_dir_results,"/Cell_annotation")
+dir.create(output_dir_labelcells,recursive=TRUE)
+reference <- LoadH5Seurat("/data/gent/vo/000/gvo00027/SingleCell10X/seuratintegrate/multi.h5seurat")
+DimPlot(object = reference, reduction = "wnn.umap", 
+        group.by = "celltype.l1", label = TRUE, 
+        label.size = 3, repel = TRUE) +
+  theme_celine+
+  NoLegend()+
+  ggtitle("Cell Type 1")+
+  ylab('wwnUMAP_2')+
+  xlab('wnnUMAP_1')
+
+DimPlot(object = reference, reduction = "wnn.umap", 
+      group.by = "celltype.l2", label = TRUE, 
+      label.size = 3, repel = TRUE) + 
+  theme_celine+
+  NoLegend()+
+  ggtitle("Cell Type 2")+
+  ylab('wwnUMAP_2')+
+  xlab('wnnUMAP_1')
+```
+
+```{r MappingToRef}
+seuratObj_singlet <- SCTransform(seuratObj_singlet, verbose = FALSE)
+
+anchors <- FindTransferAnchors(
+  reference = reference,
+  query = seuratObj_singlet,
+  normalization.method = "SCT",
+  reference.reduction = "spca",
+  dims = 1:50
+)
+
+seuratObj_singlet <- MapQuery(
+  anchorset = anchors,
+  query = seuratObj_singlet,
+  reference = reference,
+  refdata = list(
+    celltype.l1 = "celltype.l1",
+    celltype.l2 = "celltype.l2",
+    predicted_ADT = "ADT"
+  ),
+  reference.reduction = "spca",
+  reduction.model = "wnn.umap"
+)
+
+
+
+p1 <- DimPlot(seuratObj_singlet, reduction = "ref.umap", 
+             group.by = "predicted.celltype.l1", label = TRUE, 
+             label.size = 3, repel = TRUE) + 
+  theme_celine+
+  NoLegend()+
+  ggtitle("Cell Type 1")
+p2 <- DimPlot(seuratObj_singlet, reduction = "ref.umap", 
+             group.by = "predicted.celltype.l2", label = TRUE, 
+             label.size = 3 ,repel = TRUE) + 
+  theme_celine+
+  NoLegend()+
+  ggtitle("Cell Type 2")
+
+p3 <- DimPlot(seuratObj_singlet, reduction = "ref.umap",
+        group.by = "Stimulation")+
+  ggtitle("Stimulation mix")+
+  scale_color_manual(values = colorsStim,
+                     breaks = sort(unique(annotation_sample$Stimulation)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+ggarrange(plotlist = list(p1, p3, p2),
+          widths = c(1,1.25))
+
+# Save as pdf
+ggsave(file = paste0(output_dir_labelcells,"/Celltypepred_refumap.pdf"), 
+       height = 20, width = 40, device = "pdf")
+# Save as jpeg
+ggsave(file = paste0(output_dir_labelcells,"/Celltypepred_refumap.jpeg"), 
+       height = 20, width = 40, device = "jpeg")
+
+p1 <- DimPlot(seuratObj_singlet, reduction = "wnn.umap", 
+             group.by = "predicted.celltype.l1", label = TRUE, 
+             label.size = 3, repel = TRUE) + 
+  theme_celine+
+  NoLegend()+
+  ggtitle("Cell Type 1")
+
+p2 <- DimPlot(seuratObj_singlet, reduction = "wnn.umap", 
+             group.by = "predicted.celltype.l2", label = TRUE, 
+             label.size = 3 ,repel = TRUE) + 
+  theme_celine+
+  NoLegend()+
+  ggtitle("Cell Type 2")
+
+p3 <- DimPlot(seuratObj_singlet, reduction = "wnn.umap",
+        group.by = "Stimulation")+
+  ggtitle("Stimulation mix")+
+  scale_color_manual(values = colorsStim,
+                     breaks = sort(unique(annotation_sample$Stimulation)))+
+  theme_celine+
+  guides(color = guide_legend(override.aes = list(size=1.5)))
+
+ggarrange(plotlist = list(p1, p3, p2),
+          widths = c(1,1.25))
+
+# Save as pdf
+ggsave(file = paste0(output_dir_labelcells,"/Celltypepred_wnnumap.pdf"), 
+       height = 10, width = 15, device = "pdf")
+# Save asjpeg
+ggsave(file = paste0(output_dir_labelcells,"/Celltypepred_wnnumap.jpeg"), 
+       height = 10, width = 15, device = "jpeg")
+
+# Check clustering on ADT and RNA UMAPS
+p1 <- DimPlot(seuratObj_singlet, reduction = "rna.umap", 
+             group.by = "predicted.celltype.l1", label = TRUE, 
+             label.size = 3, repel = TRUE) + 
+  theme_celine+
+  NoLegend()+
+  scale_color_manual(values = colorsCellType)+
+  labs(title = "Cell Type 1",
+       subtitle = "RNA only based UMAP")
+
+p2 <- DimPlot(seuratObj_singlet, reduction = "adt.umap", 
+             group.by = "predicted.celltype.l1", label = TRUE, 
+             label.size = 3 ,repel = TRUE) + 
+  theme_celine+
+  NoLegend()+
+  scale_color_manual(values = colorsCellType)+
+  labs(title = "Cell Type 1",
+       subtitle = "ADT only based UMAP")
+
+ggarrange(plotlist = list(p1, p2),
+          widths = c(1,1.25))
+  
+# Save as pdf
+ggsave(file = paste0(output_dir_labelcells,"/Celltypepred_rnaadtumap.pdf"), 
+       height = 10, width = 15, device = "pdf")
+# Save asjpeg
+ggsave(file = paste0(output_dir_labelcells,"/Celltypepred_rnaadtumap.jpeg"), 
+       height = 10, width = 15, device = "jpeg")
+
+DefaultAssay(seuratObj_singlet) <- "prediction.score.celltype.l2"
+
+for (celltype in unique(rownames(seuratObj_singlet[["prediction.score.celltype.l2"]]))){
+  FeaturePlot(seuratObj_singlet, features = celltype,  
+            reduction = "ref.umap", cols = c("lightgrey", "darkred"), 
+            split.by = "PatientID") & 
+    theme(plot.title = element_text(size = 10,
+                                    hjust = 0.5))+
+    theme(plot.title = element_text(size = 12,color = "gray10"),
+          plot.subtitle = element_text(size=8, color= "gray 30"),
+          axis.text = element_text(size=8,color = "gray10"),
+          axis.title = element_text(size=10,color = "gray10"),
+          legend.text = element_text(size=8,color = "gray10"),
+          legend.title = element_text(size=10,color = "gray10"),
+          axis.line = element_line(color="gray50"),
+          axis.ticks = element_line(color="gray50"))
+  # Save as pdf
+  ggsave(file = paste0(output_dir_labelcells,"/",celltype,"_refumap.pdf"), 
+         height = 10, width = 15, device = "pdf")
+  # Save as jpeg
+  ggsave(file = paste0(output_dir_labelcells,"/",celltype,"_refumap.jpeg"), 
+         height = 10, width = 15, device = "jpeg")
+  
+  FeaturePlot(seuratObj_singlet, features = celltype,  
+              reduction = "wnn.umap", 
+              cols = c("lightgrey", "darkred")) & 
+    theme(plot.title = element_text(size = 10)) & 
+    theme_celine
+  
+  # Save as pdf
+  ggsave(file = paste0(output_dir_labelcells,"/", celltype, "_wnnumap.pdf"), 
+         height = 15, width = 15, device = "pdf")
+  # Save as jpeg
+  ggsave(file = paste0(output_dir_labelcells,"/", celltype, "_wnnumap.jpeg"), 
+         height = 15, width = 15, device = "jpeg")
+}
+
+```
+
+The plot above shows the cells present in the pooled sample and mapped onto the reference dataset. This makes it possible to label the cells based on 
+- Expressed genes: identified using the transcritpomic data of the RNA molecules in the cells 
+- Expressed surface markers: identified by the oligonucleotide tagged antibodies in the CITE-seq panel
+
+```{r VlnPlotSCT}
+DefaultAssay(seuratObj_singlet) <- "SCT"
+Idents(seuratObj_singlet) <- 'predicted.celltype.l2'
+VlnPlot(seuratObj_singlet, features = "RNA.weight", 
+        group.by = 'predicted.celltype.l2', sort = TRUE, pt.size = 0.1) +
+  theme_bar+
+  ggtitle("RNA weights")+
+  NoLegend()+
+  xlab("Cell Type 2")
+  
+# Save as pdf
+ggsave(file = "RNAWeights_Labels.pdf", 
+       height = 15, width = 15, device = "pdf")
+# Save as jpeg
+ggsave(file = "RNAWeights_Labels.jpeg", 
+       height = 15, width = 15, device = "jpeg")
+```
+
+### Save seurat Object
+
+```{r SaveFinalSeurat, message=FALSE, warning=FALSE,tidy=T}
+saveRDS(seuratObj_singlet, file = paste0(output_dir_robjects,"/seuratObj_",
+                                         sampleName,"_labeled.rds"))
+```
+
+## Fraction of cell types
+
+```{r}
+# Function table counts the number of cells per cell type
+CellType1<-data.frame(cell = names(table(seuratObj_singlet$predicted.celltype.l1)),
+                      cellNumber = table(seuratObj_singlet$predicted.celltype.l1)%>%as.numeric, 
+                      cellPercentage = as.numeric(table(seuratObj_singlet$predicted.celltype.l1)/(dim(seuratObj_singlet)[2])*100),
+                      cellType = "Type1")
+rownames(CellType1)<-names(table(seuratObj_singlet$predicted.celltype.l1))
+print(CellType1)
+
+CellType2<-data.frame(cell = names(table(seuratObj_singlet$predicted.celltype.l2)),
+                      cellNumber = table(seuratObj_singlet$predicted.celltype.l2)%>%as.numeric, 
+                      cellPercentage = as.numeric(table(seuratObj_singlet$predicted.celltype.l2)/(dim(seuratObj_singlet)[2])*100),
+                      cellType = "Type2")
+print(CellType2)
+
+CellTypes<-rbind(CellType1, CellType2)
+write_tsv(CellTypes, paste0(output_dir_results, "/CellTypes.tsv"))
+
+```
+
+## QC report
+
+```{r WriteQCReport}
+write_tsv(qc_df,paste0(output_dir_results,"/qc_stats.tsv"))
+```
