@@ -29,7 +29,7 @@ Furthermore, the files in the **`01_PreprocessingPipeline`** are elaborated on i
 | `001_scCITE_NF_CVID.config` | The configuration file necessary to run the NextFlow preprocessing pipeline. |
 | `001_RunNF.pbs` | This script is used to finally run the NextFlow preprocessing pipeline using the correct configuration file. |
 | `002_QC_scCITESeq.Rmd`| This RMarkdown script contains necessary QC checks and formatting of the final dataset into a Seurat object that is used for data integration.| 
-|
+
 
 ## Data integration
 Seurat was used to integrate the data obtain in distinct, so called 'CEV' single-cell sample pools. This was performed using the following scripts available in the **`02_DataIntegration`** folder. 
